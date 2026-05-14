@@ -23,11 +23,11 @@ export default function Dashboard() {
   }, [])
 
   const layers = [
-    { id: 1, label: 'Data Collection', to: '/layer1', icon: Database, color: 'text-sky-500', bg: 'bg-sky-50', status: 'Live', statusOk: true },
-    { id: 2, label: 'Data Engineering', to: '/layer2', icon: Cpu, color: 'text-violet-500', bg: 'bg-violet-50', status: '6 Pipelines', statusOk: true },
-    { id: 3, label: 'AI / ML', to: '/layer3', icon: Brain, color: 'text-emerald-500', bg: 'bg-emerald-50', status: '7 Models', statusOk: true },
-    { id: 4, label: 'Decision Engine', to: '/layer4', icon: Zap, color: 'text-brand-500', bg: 'bg-brand-50', status: `${overview?.pending_decisions ?? '—'} Pending`, statusOk: (overview?.pending_decisions ?? 0) > 0 },
-    { id: 5, label: 'Autonomous OS', to: '/layer5', icon: Bot, color: 'text-rose-500', bg: 'bg-rose-50', status: 'Active', statusOk: true },
+    { id: 1, label: 'Data Collection', to: '/data-collection', icon: Database, color: 'text-sky-500', bg: 'bg-sky-50', status: 'Live', statusOk: true },
+    { id: 2, label: 'Data Engineering', to: '/data-engineering', icon: Cpu, color: 'text-violet-500', bg: 'bg-violet-50', status: '6 Pipelines', statusOk: true },
+    { id: 3, label: 'AI / ML', to: '/ai-intelligence', icon: Brain, color: 'text-emerald-500', bg: 'bg-emerald-50', status: '7 Models', statusOk: true },
+    { id: 4, label: 'Decision Engine', to: '/decision-engine', icon: Zap, color: 'text-brand-500', bg: 'bg-brand-50', status: `${overview?.pending_decisions ?? '—'} Pending`, statusOk: (overview?.pending_decisions ?? 0) > 0 },
+    { id: 5, label: 'Autonomous OS', to: '/cafe-os', icon: Bot, color: 'text-rose-500', bg: 'bg-rose-50', status: 'Active', statusOk: true },
   ]
 
   const priorityBadge = (p: string) => {

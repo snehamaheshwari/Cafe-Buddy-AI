@@ -8,6 +8,7 @@ import AIMLIntelligence from './pages/AIMLIntelligence'
 import DecisionEngine from './pages/DecisionEngine'
 import CafeOS from './pages/CafeOS'
 import Chatbot from './pages/Chatbot'
+import { SidebarProvider } from './context/SidebarContext'
 
 function isAuthenticated(): boolean {
   try {
@@ -26,12 +27,15 @@ function PrivateLayout({ children }: { children: React.ReactNode }) {
     return <Navigate to="/login" state={{ from: location }} replace />
   }
   return (
-    <div className="flex min-h-screen bg-slate-100">
-      <Sidebar />
-      <div className="flex-1 ml-64 min-h-screen flex flex-col">
-        {children}
+    <SidebarProvider>
+      <div className="flex min-h-screen bg-slate-100">
+        <Sidebar />
+        {/* md:ml-64 pushes content right of sidebar on desktop; on mobile content fills full width */}
+        <div className="flex-1 md:ml-64 min-h-screen flex flex-col min-w-0">
+          {children}
+        </div>
       </div>
-    </div>
+    </SidebarProvider>
   )
 }
 

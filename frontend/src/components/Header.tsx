@@ -1,6 +1,7 @@
-import { Bell, RefreshCw, LogOut } from 'lucide-react'
+import { Bell, RefreshCw, LogOut, Menu } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useSidebar } from '../context/SidebarContext'
 
 interface Props {
   title: string
@@ -10,6 +11,7 @@ interface Props {
 export default function Header({ title, subtitle }: Props) {
   const [time, setTime] = useState(new Date())
   const navigate = useNavigate()
+  const { toggle } = useSidebar()
 
   const user = (() => {
     try { return JSON.parse(localStorage.getItem('cafe_buddy_auth') || '{}') } catch { return {} }
@@ -26,15 +28,26 @@ export default function Header({ title, subtitle }: Props) {
   }
 
   return (
-    <header className="sticky top-0 z-20 bg-white border-b border-slate-200 px-6 py-3 flex items-center justify-between">
-      <div>
-        <h1 className="text-lg font-bold text-slate-900 leading-tight">{title}</h1>
-        {subtitle && <p className="text-xs text-slate-500">{subtitle}</p>}
+    <header className="sticky top-0 z-20 bg-white border-b border-slate-200 px-4 py-3 flex items-center justify-between gap-2">
+      <div className="flex items-center gap-3 min-w-0">
+        {/* Hamburger — mobile only */}
+        <button
+          className="md:hidden flex-shrink-0 p-2 rounded hover:bg-slate-100 text-slate-500 hover:text-slate-700 transition-colors"
+          onClick={toggle}
+          aria-label="Open menu"
+        >
+          <Menu size={20} />
+        </button>
+
+        <div className="min-w-0">
+          <h1 className="text-base md:text-lg font-bold text-slate-900 leading-tight truncate">{title}</h1>
+          {subtitle && <p className="text-xs text-slate-500 truncate hidden sm:block">{subtitle}</p>}
+        </div>
       </div>
 
-      <div className="flex items-center gap-3">
-        {/* Clock */}
-        <div className="text-right hidden sm:block">
+      <div className="flex items-center gap-2 flex-shrink-0">
+        {/* Clock — hidden on small screens */}
+        <div className="text-right hidden lg:block">
           <div className="text-sm font-semibold text-slate-700 font-mono">
             {time.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
           </div>
@@ -57,8 +70,8 @@ export default function Header({ title, subtitle }: Props) {
         </button>
 
         {/* User + sign-out */}
-        <div className="flex items-center gap-2 pl-3 border-l border-slate-200">
-          <div className="w-8 h-8 rounded bg-brand-500 flex items-center justify-center text-white text-xs font-bold uppercase">
+        <div className="flex items-center gap-2 pl-2 border-l border-slate-200">
+          <div className="w-8 h-8 rounded bg-brand-500 flex items-center justify-center text-white text-xs font-bold uppercase flex-shrink-0">
             {(user.username || 'A').slice(0, 2)}
           </div>
           <div className="hidden sm:block">
@@ -67,7 +80,7 @@ export default function Header({ title, subtitle }: Props) {
           </div>
           <button
             onClick={handleSignOut}
-            className="ml-1 flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium text-slate-500 hover:bg-red-50 hover:text-red-600 border border-transparent hover:border-red-200 transition-colors"
+            className="ml-1 flex items-center gap-1.5 px-2 py-1.5 rounded text-xs font-medium text-slate-500 hover:bg-red-50 hover:text-red-600 border border-transparent hover:border-red-200 transition-colors"
             title="Sign out"
           >
             <LogOut size={13} />
