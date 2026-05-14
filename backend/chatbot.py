@@ -294,16 +294,26 @@ def _smart_response(message: str, data: list, festivals: list, search_res: list 
     plats  = platform_breakdown(data)
     cats   = category_breakdown(data)
     dates  = sorted(set(r["date"] for r in data))
+    total_rev   = sum(r["revenue"] for r in data)
+    total_cost  = sum(r["cost"]    for r in data)
+    daily_avg   = total_rev / max(len(dates), 1)
+    food_cost_pct = total_cost / max(total_rev, 1) * 100
 
     # ── Top / best selling ──
-    if any(k in m for k in ["highest selling", "best selling", "top item",
-                              "most popular", "top selling", "best performer"]):
+    if any(k in m for k in [
+        "highest selling", "best selling", "top item", "most popular", "top selling",
+        "best performer", "best seller", "top seller", "top product", "best product",
+        "selling the most", "sells the most", "most sold", "highest revenue item",
+        "which item", "which product", "popular item", "popular product",
+        "what item", "what product", "what sells", "what is selling",
+        "menu performance", "item performance",
+    ]):
         period_data, period_label = data, "overall"
-        if "last week" in m or "past week" in m:
+        if "last week" in m or "past week" in m or "this week" in m:
             cut = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
             period_data  = [r for r in data if r["date"] >= cut]
             period_label = "last 7 days"
-        elif "last month" in m:
+        elif "last month" in m or "past month" in m:
             cut = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
             period_data  = [r for r in data if r["date"] >= cut]
             period_label = "last 30 days"
@@ -324,8 +334,11 @@ def _smart_response(message: str, data: list, festivals: list, search_res: list 
         return "\n".join(lines)
 
     # ── Worst / low margin ──
-    if any(k in m for k in ["lowest margin", "worst", "low profit",
-                              "least profitable", "remove", "low margin"]):
+    if any(k in m for k in [
+        "lowest margin", "worst", "low profit", "least profitable", "remove", "low margin",
+        "poor margin", "bad margin", "underperforming", "weak item", "struggling",
+        "which item to remove", "discontinue", "drop item", "which to remove",
+    ]):
         bottom = sorted(items, key=lambda x: x["margin_pct"])[:4]
         lines  = ["**Items with lowest contribution margin:**\n"]
         for i, x in enumerate(bottom):
@@ -337,9 +350,34 @@ def _smart_response(message: str, data: list, festivals: list, search_res: list 
         lines.append("- Consider removing the lowest performer if margin is below 20%")
         return "\n".join(lines)
 
+    # ── Food cost / profitability / cost efficiency ──
+    if any(k in m for k in [
+        "food cost", "cost efficiency", "reduce cost", "cost reduction", "cogs",
+        "ingredient cost", "lower cost", "save cost", "cost control",
+        "increase margin", "improve margin", "boost margin", "increase profit",
+        "profit margin", "profit", "gross margin", "net margin",
+        "how efficient", "efficiency", "cost saving",
+    ]):
+        high_margin = sorted(items, key=lambda x: x["margin_pct"], reverse=True)[:3]
+        low_margin  = sorted(items, key=lambda x: x["margin_pct"])[:3]
+        hm_str = ", ".join(f"**{x['name']}** ({x['margin_pct']:.1f}%)" for x in high_margin)
+        lm_str = ", ".join(f"**{x['name']}** ({x['margin_pct']:.1f}%)" for x in low_margin)
+        status = "✅ Healthy" if food_cost_pct < 35 else ("⚠️ High" if food_cost_pct < 42 else "🚨 Critical")
+        return (f"**Food Cost & Profitability Analysis**\n\n"
+                f"- Overall food cost % : **{food_cost_pct:.1f}%** — {status} (target: 28–35%)\n"
+                f"- Total revenue       : **₹{total_rev:,.0f}** | Total cost: ₹{total_cost:,.0f}\n"
+                f"- Gross profit        : **₹{total_rev - total_cost:,.0f}** ({100 - food_cost_pct:.1f}% margin)\n\n"
+                f"**🌟 High-margin items (push these):**\n{hm_str}\n\n"
+                f"**⚠️ Low-margin items (review these):**\n{lm_str}\n\n"
+                f"**💡 Cost Reduction Strategies:**\n"
+                f"- Negotiate bulk pricing with your top 3 suppliers\n"
+                f"- Reduce portion sizes by 5% on low-margin items (often unnoticed by customers)\n"
+                f"- Use high-margin items as upsell add-ons during order taking\n"
+                f"- Run a 'chef's special' each week to use near-expiry ingredients and boost margins")
+
     # ── Weekend vs weekday ──
-    if ("weekend" in m and ("weekday" in m or "week day" in m or "compare" in m or "vs" in m)) \
-            or "compare weekend" in m:
+    if ("weekend" in m and ("weekday" in m or "week day" in m or "compare" in m or "vs" in m or "versus" in m)) \
+            or "compare weekend" in m or ("weekend" in m and "sales" in m):
         wd_set, we_set = set(), set()
         wd_rev, we_rev = 0.0, 0.0
         for r in data:
@@ -361,7 +399,11 @@ def _smart_response(message: str, data: list, festivals: list, search_res: list 
                 f"💡 {'Weekends are significantly busier. Add 2 extra staff on Sat/Sun evenings and run Zomato promotions on Friday nights to capture the weekend rush.' if diff > 15 else 'Weekend and weekday performance is balanced. Focus on weekday lunch promotions to smooth demand.'}")
 
     # ── Platform analysis ──
-    if any(k in m for k in ["platform", "zomato", "swiggy", "dine-in", "delivery", "channel"]):
+    if any(k in m for k in [
+        "platform", "zomato", "swiggy", "dine-in", "dine in", "delivery",
+        "channel", "online order", "online sales", "which platform",
+        "which channel", "takeaway", "take away", "order channel",
+    ]):
         if not plats:
             return "No platform data available."
         plats_sorted = sorted(plats, key=lambda x: x["revenue"], reverse=True)
@@ -374,16 +416,22 @@ def _smart_response(message: str, data: list, festivals: list, search_res: list 
                      f"Invest in better photos, menu descriptions, and promotions on {top_p} to grow this further.")
         return "\n".join(lines)
 
-    # ── Revenue / total ──
-    if any(k in m for k in ["total revenue", "how much", "revenue", "earnings", "sales total"]):
-        total = sum(r["revenue"] for r in data)
-        daily_avg = total / max(len(dates), 1)
+    # ── Revenue / sales total ──
+    if any(k in m for k in [
+        "total revenue", "how much", "revenue", "earnings", "sales total",
+        "total sales", "how much did", "sales figure", "sales number",
+        "income", "turnover", "how much money", "how much earn",
+        "how much have", "what is my revenue", "what are my sales",
+        "overall revenue", "overall sales",
+    ]):
+        if not dates:
+            return "No sales data available yet."
         best_date = max(
             {d: sum(r["revenue"] for r in data if r["date"] == d) for d in dates}.items(),
             key=lambda x: x[1]
         )
         return (f"**Revenue Summary**\n\n"
-                f"- Total revenue : **₹{total:,.0f}** over {len(dates)} days\n"
+                f"- Total revenue : **₹{total_rev:,.0f}** over {len(dates)} days\n"
                 f"- Daily average : **₹{daily_avg:,.0f}**\n"
                 f"- Best day      : **{best_date[0]}** (₹{best_date[1]:,.0f})\n"
                 f"- Top category  : **{cats[0]['category'] if cats else '—'}**\n\n"
@@ -398,7 +446,9 @@ def _smart_response(message: str, data: list, festivals: list, search_res: list 
 
     if fest_name_in_msg or any(k in m for k in [
         "festival", "upcoming", "occasion", "special dish", "new dish",
-        "season", "holiday", "ideas", "how to handle", "prepare"
+        "season", "holiday", "ideas", "idea", "how to handle", "prepare",
+        "celebration", "event", "plan for", "get ready", "special menu",
+        "promotion", "promo", "offer", "discount",
     ]):
         if fest_name_in_msg:
             f = fest_name_in_msg
@@ -428,25 +478,58 @@ def _smart_response(message: str, data: list, festivals: list, search_res: list 
                 f"**🍽️ Special Menu Ideas:**\n{menu_list}\n\n"
                 f"**📣 Promotion Ideas:**\n{promo_list}\n\n"
                 f"**📊 Data Insight:** "
-                f"Your daily average is ₹{sum(r['revenue'] for r in data)/max(len(dates),1):,.0f}. "
+                f"Your daily average is ₹{daily_avg:,.0f}. "
                 f"Festivals typically drive 30–50% higher footfall — staff up and pre-order ingredients."
                 f"{web_note}\n\n"
                 f"💡 **Quick win:** Post reels/stories of your festival special dishes 3 days before {f['name']} on Instagram to build anticipation.")
 
-    # ── Default ──
+    # ── General overview / analysis / improvement queries ──
+    if any(k in m for k in [
+        "overview", "summary", "report", "analysis", "analyse", "analyze",
+        "insight", "performance", "status", "how is", "how am", "how are",
+        "how can", "how do", "how to", "improve", "increase", "grow",
+        "strategy", "advice", "recommend", "suggest", "help me",
+        "what should", "what can", "tell me", "show me", "give me",
+        "about my cafe", "about my business", "my cafe", "my business",
+        "sales", "data", "metrics", "kpi", "numbers",
+    ]):
+        top3_str  = "\n".join(f"  {i+1}. **{x['name']}** — ₹{x['revenue']:,.0f} ({x['margin_pct']:.1f}% margin)"
+                              for i, x in enumerate(items[:3]))
+        top_plat  = max(plats, key=lambda x: x["revenue"])["platform"] if plats else "—"
+        next_fest = festivals[0]["name"] if festivals else "—"
+        next_date = festivals[0]["date"] if festivals else "—"
+        status    = "✅ Healthy" if food_cost_pct < 35 else ("⚠️ High" if food_cost_pct < 42 else "🚨 Critical")
+
+        return (f"**Café Business Overview**\n\n"
+                f"**📊 Revenue**\n"
+                f"- Total: **₹{total_rev:,.0f}** over {len(dates)} days\n"
+                f"- Daily average: **₹{daily_avg:,.0f}**\n"
+                f"- Food cost %: **{food_cost_pct:.1f}%** — {status}\n\n"
+                f"**🏆 Top 3 Items:**\n{top3_str}\n\n"
+                f"**📱 Best Platform:** {top_plat}\n\n"
+                f"**📅 Next Festival:** {next_fest} on {next_date}\n\n"
+                f"**💡 Quick Wins:**\n"
+                f"- Upsell **{items[0]['name'] if items else 'top items'}** — your highest revenue item\n"
+                f"- Boost promotions on **{top_plat}** — your top channel\n"
+                f"- Prepare a special menu for **{next_fest}** to capture festival footfall\n"
+                f"- Review low-margin items: **{items[-1]['name'] if items else '—'}** needs attention\n\n"
+                f"{'💡 *Set ANTHROPIC_API_KEY in backend .env for full AI-powered answers.*' if not HAS_AI else ''}")
+
+    # ── Absolute last resort (greetings / pure meta-questions) ──
     top3 = "\n".join(f"  {i+1}. {x['name']}" for i, x in enumerate(items[:3]))
-    return (f"I can help you analyse your café data and plan your business. Here are some things to try:\n\n"
+    return (f"Hi! I'm Cafe Buddy AI. Here's what I can help you with:\n\n"
             f"**Data questions:**\n"
             f"- \"Which was the highest selling item last week?\"\n"
             f"- \"Compare my weekend vs weekday sales\"\n"
             f"- \"Which platform generates the most revenue?\"\n"
-            f"- \"What is my lowest margin item?\"\n\n"
+            f"- \"What is my lowest margin item?\"\n"
+            f"- \"How can I increase my food cost efficiency?\"\n\n"
             f"**Festival / menu planning:**\n"
             f"- \"How should I prepare for Navratri?\"\n"
             f"- \"What special dish should I introduce for Diwali?\"\n"
             f"- \"Give me Holi menu ideas\"\n\n"
             f"Your current top sellers are:\n{top3}\n\n"
-            f"{'💡 *Set ANTHROPIC_API_KEY in your backend .env for full AI-powered answers with live web search.*' if not HAS_AI else ''}")
+            f"{'💡 *Set ANTHROPIC_API_KEY in backend .env for full AI-powered answers.*' if not HAS_AI else ''}")
 
 
 async def _stream_text(text: str, delay: float = 0.018):
