@@ -1,3 +1,13 @@
+---
+title: Cafe Buddy
+emoji: ☕
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+pinned: false
+app_port: 7860
+---
+
 # ☕ Cafe Buddy — AI Café Operating System
 
 A full 5-layer AI product prototype for intelligent café management.

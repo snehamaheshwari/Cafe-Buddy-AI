@@ -29,6 +29,6 @@ COPY backend/ .
 # → /app/backend/../frontend/dist → /app/frontend/dist  ✓
 COPY --from=frontend-build /app/frontend/dist /app/frontend/dist
 
-EXPOSE 8080
-# Render injects $PORT; fall back to 8080 for local docker run
-CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080}"]
+EXPOSE 7860
+# HF Spaces injects $PORT=7860; fall back for local docker run
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-7860}"]
