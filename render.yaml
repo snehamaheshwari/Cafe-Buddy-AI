@@ -1,14 +1,12 @@
 services:
   - type: web
     name: cafe-buddy
-    runtime: python
-    rootDir: backend
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    runtime: docker
     plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
     envVars:
-      - key: PYTHON_VERSION
-        value: 3.12.0
-      # Optional — set your key in Render dashboard to enable Claude AI mode
-      # - key: ANTHROPIC_API_KEY
-      #   sync: false
+      # Optional: set in Render dashboard to enable full Claude AI in chatbot
+      # Leave blank → Smart Analytics Engine works without any key
+      - key: ANTHROPIC_API_KEY
+        sync: false

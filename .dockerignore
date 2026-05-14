@@ -1,0 +1,28 @@
+# Git
+.git
+.gitignore
+
+# Node — Docker installs fresh in Stage 1
+frontend/node_modules/
+
+# Pre-built dist — Docker rebuilds from source in Stage 1
+frontend/dist/
+
+# Python cache
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+
+# Local environment & secrets
+.env
+.env.local
+*.env
+
+# Tunnel & log artefacts
+*.log
+cloudflared.exe
+serveo_*.log
+
+# Docs / meta
+README.md
+render.yaml

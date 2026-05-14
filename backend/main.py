@@ -857,22 +857,37 @@ def kpis():
 
 
 # ─────────────────────────────────────────────
+# HEALTH CHECK  (used by Render & UptimeRobot)
+# ─────────────────────────────────────────────
+
+@app.get("/health", include_in_schema=False)
+def health():
+    return {"status": "ok", "data_source": "excel" if _uploaded_data else "demo"}
+
+
+# ─────────────────────────────────────────────
 # SERVE BUILT FRONTEND (production mode)
 # All /api routes are registered above; this block runs LAST.
-# Mount /assets for hashed JS/CSS bundles, then catch every other
-# path with a FileResponse of index.html so React Router works.
+# os.path.abspath guarantees an absolute path regardless of CWD,
+# so Docker / cloud deployments never silently miss the dist folder.
 # ─────────────────────────────────────────────
 _dist_dir = os.path.normpath(
-    os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
+    os.path.join(os.path.abspath(os.path.dirname(__file__)), "..", "frontend", "dist")
 )
+
 if os.path.isdir(_dist_dir):
+    # Hashed asset bundles (JS / CSS)
     app.mount("/assets", StaticFiles(directory=os.path.join(_dist_dir, "assets")), name="assets")
 
     @app.get("/{full_path:path}", include_in_schema=False)
     def serve_spa(full_path: str):
-        # Serve any file that exists (e.g. favicon.ico, manifest.json)
         candidate = os.path.join(_dist_dir, full_path)
         if os.path.isfile(candidate):
             return FileResponse(candidate)
-        # Fall back to index.html for all React Router paths
         return FileResponse(os.path.join(_dist_dir, "index.html"))
+else:
+    # Dist not found — surface a clear message instead of a silent 404
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def no_frontend(full_path: str):
+        return {"error": "Frontend not built.", "dist_expected": _dist_dir,
+                "hint": "Run 'cd frontend && npm run build' then restart."}
