@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+.env.local
+*.egg-info/
+venv/
+env/
+
+# Node — exclude heavy install folder, keep the build output
+frontend/node_modules/
+
+# Logs & tunnel artefacts
+*.log
+cloudflared.exe
+cloudflared_tunnel.log
+serveo_*.log
+/tmp/
+
+# OS
+.DS_Store
+Thumbs.db
