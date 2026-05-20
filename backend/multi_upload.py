@@ -587,7 +587,7 @@ def _parse_customer(df: pd.DataFrame, filename: str) -> tuple[list, dict]:
                 "name":             name,
                 "phone":            phone,
                 "birthday":         _safe_str(row[bday_col])  if bday_col  else "",
-                "visit_frequency":  int(_safe_float(row[freq_col], 0)) if freq_col else 0,
+                "visit_frequency":  _safe_str(row[freq_col])  if freq_col  else "",
                 "favorite_items":   _safe_str(row[fav_col])   if fav_col   else "",
                 "avg_order_value":  _safe_float(row[aov_col]) if aov_col   else None,
                 "feedback":         _safe_str(row[fb_col])    if fb_col    else "",
@@ -882,10 +882,41 @@ def customer_summary():
     if not data:
         return {"uploaded": False, "info": {}, "summary": {}}
 
+    # Text-to-numeric map for visit_frequency (visits per month)
+    _FREQ_MAP = {
+        "daily": 30, "everyday": 30,
+        "weekly": 4, "every week": 4,
+        "fortnightly": 2, "bi-weekly": 2, "biweekly": 2,
+        "monthly": 1, "once a month": 1,
+        "quarterly": 0.33, "rarely": 0.2, "occasional": 0.2, "sometimes": 0.5,
+    }
+
+    def _freq_to_num(v: str) -> float:
+        key = str(v).lower().strip()
+        for k, n in _FREQ_MAP.items():
+            if k in key:
+                return n
+        try:
+            return float(key)
+        except Exception:
+            return 0.0
+
     total      = len(data)
     avg_aov    = _avg_non_none([r["avg_order_value"] for r in data])
-    avg_visits = sum(r["visit_frequency"] for r in data) / max(total, 1)
     avg_pts    = sum(r["loyalty_points"]  for r in data) / max(total, 1)
+
+    # Frequency distribution (exact labels)
+    freq_dist: dict = {}
+    for r in data:
+        f = r.get("visit_frequency") or "Not specified"
+        freq_dist[f] = freq_dist.get(f, 0) + 1
+
+    # Most common visit frequency label
+    top_freq = max(freq_dist, key=freq_dist.get) if freq_dist else ""
+
+    # Numeric average (visits/month) for summary widget
+    freq_nums = [_freq_to_num(r.get("visit_frequency", "")) for r in data]
+    avg_visits = sum(freq_nums) / max(total, 1)
 
     # Platform source
     src_agg: dict = {}
@@ -916,8 +947,10 @@ def customer_summary():
             "total_customers":  total,
             "avg_order_value":  round(avg_aov, 2) if avg_aov is not None else None,
             "avg_visit_freq":   round(avg_visits, 1),
+            "top_visit_freq":   top_freq,
             "avg_loyalty_pts":  round(avg_pts, 1),
         },
+        "visit_freq_dist":  [{"frequency": k, "count": v} for k, v in sorted(freq_dist.items(), key=lambda x: -x[1])],
         "platform_source":  [{"source": k, "count": v} for k, v in src_agg.items()],
         "gender_dist":      [{"gender": k, "count": v} for k, v in gender_agg.items()],
         "age_dist":         [{"age_group": k, "count": v} for k, v in age_agg.items()],
@@ -943,18 +976,39 @@ async def upload_reviews(file: UploadFile = File(...)):
 
     df.columns = [str(c).strip() for c in df.columns]
 
-    # Require at minimum Review_Text
+    # Flexible column normalisation — maps whatever the file uses to canonical names
+    REVIEW_COL_ALIASES = {
+        "Review_Text":      ["review_text", "review text", "review", "comment", "feedback text",
+                             "customer review", "review content", "text", "comments"],
+        "Sentiment_Label":  ["sentiment_label", "sentiment label", "sentiment", "label",
+                             "category", "polarity", "tone"],
+        "Rating":           ["rating", "star rating", "stars", "score", "review rating"],
+        "Review_ID":        ["review_id", "review id", "id", "review no", "review number"],
+        "Source":           ["source", "platform", "channel", "platform source", "review source"],
+        "Review_Date":      ["review_date", "review date", "date", "review_date", "posted date",
+                             "created at", "date of review"],
+        "Cafe_Location":    ["cafe_location", "cafe location", "location", "branch", "outlet"],
+        "Visit_Type":       ["visit_type", "visit type", "type of visit", "visit mode",
+                             "dine in", "delivery"],
+    }
+
+    rename_map = {}
+    for canonical, aliases in REVIEW_COL_ALIASES.items():
+        if canonical in df.columns:
+            continue  # already correct
+        for col in df.columns:
+            if _norm(col) in [_norm(a) for a in aliases]:
+                rename_map[col] = canonical
+                break
+    if rename_map:
+        df = df.rename(columns=rename_map)
+
     if "Review_Text" not in df.columns:
-        # Try case-insensitive match
-        match = next((c for c in df.columns if c.lower() == "review_text"), None)
-        if match:
-            df = df.rename(columns={match: "Review_Text"})
-        else:
-            raise HTTPException(
-                status_code=422,
-                detail="File must contain a 'Review_Text' column. "
-                       f"Found columns: {list(df.columns)}"
-            )
+        raise HTTPException(
+            status_code=422,
+            detail="File must contain a 'Review_Text' (or similar) column. "
+                   f"Found columns: {list(df.columns)}"
+        )
 
     from sentiment_engine import get_engine
     engine = get_engine()
@@ -1017,15 +1071,17 @@ def reviews_summary():
 # ─────────────────────────────────────────────
 
 MENU_ALIASES = {
-    "category": ["category", "cat", "item category", "menu category", "type"],
-    "item":     ["item", "item name", "name", "product", "dish", "menu item", "description"],
-    "base_price": ["base price", "base price (rs)", "base price(rs)", "price", "base_price",
-                   "base rate", "mrp", "selling price", "rate", "cost"],
+    "category": ["category", "cat", "item category", "menu category", "food category"],
+    "item":     ["item name", "item", "product", "dish", "menu item", "product name", "description"],
+    # "cost" deliberately excluded — cost ≠ selling price; "rate" kept as it maps to selling price
+    "base_price": ["base price", "base price (rs)", "base price(rs)", "base_price",
+                   "base rate", "mrp", "selling price", "rate", "price"],
     "season":   ["season", "season code", "availability season", "seasonal"],
-    "dayparts": ["available dayparts", "dayparts", "meal period", "time slots",
-                 "applicable dayparts", "daypart"],
-    "veg":      ["veg / non-veg", "veg/non-veg", "veg", "type", "veg non veg",
-                 "food type", "veg or non-veg"],
+    "dayparts": ["available dayparts", "dayparts", "applicable dayparts", "time slots",
+                 "daypart", "meal period"],
+    # "type" removed — too generic and conflicts with "category"; use explicit veg/non-veg phrases
+    "veg":      ["veg / non-veg", "veg/non-veg", "veg non veg", "veg or non-veg",
+                 "food type", "veg status", "vegetarian"],
     "notes":    ["notes", "note", "remarks", "comments", "special notes"],
     "sku":      ["sku", "sku id", "sku_id", "item code", "product code", "code"],
 }
