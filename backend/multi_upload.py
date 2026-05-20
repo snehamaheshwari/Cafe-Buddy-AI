@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Optional
 
 import pandas as pd
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 
 import data_store
 
@@ -23,30 +23,49 @@ router = APIRouter()
 # SHARED COLUMN-DETECTION UTILITY
 # ─────────────────────────────────────────────
 
+import re as _re
+
+def _norm(s: str) -> str:
+    """Normalise a column name: strip non-printable chars, collapse whitespace, lowercase."""
+    s = _re.sub(r'[^\x20-\x7E]', ' ', str(s))   # strip non-ASCII printable
+    s = _re.sub(r'\s+', ' ', s).strip().lower()
+    return s
+
+
 def _detect(df_cols: list, aliases: dict, key: str) -> Optional[str]:
     """
-    3-pass detection:
-      1. Exact lowercase match
-      2. Any fragment of a slash/pipe-separated column matches
-      3. Alias is a prefix or suffix of the column name
+    4-pass detection:
+      1. Exact normalised match
+      2. Any slash/pipe fragment matches an alias
+      3. Alias is a prefix or suffix of the normalised column name
+      4. Column name contains the alias as a substring
     """
-    mapping = {c.lower().strip(): c for c in df_cols}
+    norm_map = {_norm(c): c for c in df_cols}
 
     for alias in aliases.get(key, []):
-        if alias.lower() in mapping:
-            return mapping[alias.lower()]
+        al = _norm(alias)
+        if al in norm_map:
+            return norm_map[al]
 
     for col in df_cols:
-        parts = [p.strip().lower() for p in col.replace("|", "/").split("/")]
+        parts = [p.strip().lower() for p in _norm(col).replace("|", "/").split("/")]
         for alias in aliases.get(key, []):
-            if alias.lower() in parts:
+            al = _norm(alias)
+            if al in parts:
                 return col
 
     for col in df_cols:
-        cl = col.lower().strip()
+        cl = _norm(col)
         for alias in aliases.get(key, []):
-            al = alias.lower()
+            al = _norm(alias)
             if cl.startswith(al) or cl.endswith(al):
+                return col
+
+    for col in df_cols:
+        cl = _norm(col)
+        for alias in aliases.get(key, []):
+            al = _norm(alias)
+            if len(al) >= 4 and al in cl:
                 return col
 
     return None
@@ -179,6 +198,19 @@ def _parse_financial(df: pd.DataFrame, filename: str) -> tuple[list, dict]:
         except Exception:
             skipped += 1
 
+    # Auto-fix: Excel often stores percentage columns as decimals (0.32 → 32%).
+    # Detect this by checking if the majority of non-None values in a pct column
+    # are <= 1.5 (dead giveaway of fractional encoding) and multiply by 100.
+    _pct_fields = ["gross_margin_pct", "food_cost_pct", "labor_cost_pct", "net_profit"]
+    for field in _pct_fields:
+        vals = [r[field] for r in records if r.get(field) is not None]
+        if vals:
+            median_val = sorted(vals)[len(vals) // 2]
+            if median_val <= 1.5:   # almost certainly fractional (e.g. 0.32 means 32%)
+                for r in records:
+                    if r.get(field) is not None:
+                        r[field] = round(r[field] * 100, 2)
+
     dates = sorted(set(r["date"] for r in records))
     detected = {k: v for k, v in {
         "date": date_col, "daily_revenue": rev_col, "gross_margin": gm_col,
@@ -208,15 +240,33 @@ POS_ALIASES = {
     ],
     "timestamp": [
         "timestamp", "order time", "order timestamp", "date time",
-        "datetime", "order date", "date", "time", "created at",
+        "datetime", "order date", "date", "created at",
     ],
+    # "revenue" is the primary money column — exact match wins over bill_amount
+    "revenue": [
+        "revenue", "net revenue", "net sales", "sale amount",
+        "total revenue", "gross revenue",
+    ],
+    # bill_amount is a fallback if there is no dedicated revenue column;
+    # NOTE: "amount" deliberately excluded to avoid matching "GST Amount"
     "bill_amount": [
         "bill amount", "total amount", "order amount", "invoice amount",
-        "net amount", "grand total", "final amount", "payable amount",
-        "amount", "total",
+        "grand total", "final amount", "payable amount", "total",
+    ],
+    "price": [
+        "price", "rate", "unit price", "selling price", "mrp",
+        "item price", "price / rate",
+    ],
+    "cost": [
+        "cost", "cogs", "cost of goods", "item cost", "unit cost",
+        "food cost amount", "ingredient cost",
+    ],
+    "category": [
+        "category", "item category", "product category", "type",
+        "item type", "menu category", "food category",
     ],
     "gst": [
-        "gst", "tax", "gst amount", "taxes", "vat", "tax amount",
+        "gst", "gst amount", "tax", "taxes", "vat", "tax amount",
         "sgst", "cgst",
     ],
     "discount": [
@@ -237,16 +287,28 @@ POS_ALIASES = {
     ],
     "payment_mode": [
         "payment mode", "payment method", "pay mode", "mode of payment",
-        "payment type", "payment", "paid via", "pay via",
+        "payment type", "paid via", "pay via",
     ],
     "platform": [
         "platform", "delivery platform", "channel", "order source",
         "platform / channel", "delivery channel", "order channel",
         "source",
     ],
-    "peak_hour": [
-        "peak hour", "time slot", "hour", "time period", "rush hour",
-        "meal period", "slot",
+    "hour": [
+        "hour", "time", "order time", "time slot", "peak hour",
+        "time period", "rush hour", "meal period", "slot",
+    ],
+    "daypart": [
+        "daypart", "day part", "meal period", "time of day", "session",
+        "shift",
+    ],
+    "customer_phone": [
+        "customer phone", "customer mobile", "customer contact",
+        "phone", "mobile", "contact number",
+    ],
+    "cafe_location": [
+        "cafe location", "location", "branch", "outlet", "store",
+        "cafe branch", "restaurant location",
     ],
     "repeat_customer": [
         "repeat customer", "returning customer", "loyal customer",
@@ -257,9 +319,29 @@ POS_ALIASES = {
         "why cancelled", "cancellation",
     ],
     "refund_reason": [
-        "refund reason", "refund", "return reason", "why refunded",
+        "refund reason", "return reason", "why refunded",
     ],
 }
+
+
+def _parse_hour(val) -> int:
+    """Extract integer hour from various formats: datetime, 'HH:MM', int, float."""
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return 12
+    if isinstance(val, (int, float)):
+        return int(val) % 24
+    s = str(val).strip()
+    # Handle "HH:MM" or "HH:MM:SS" string from Excel Hour column
+    if ":" in s:
+        try:
+            return int(s.split(":")[0]) % 24
+        except Exception:
+            pass
+    # Try parsing as a full datetime string
+    try:
+        return pd.to_datetime(s).hour
+    except Exception:
+        return 12
 
 
 def _parse_pos(df: pd.DataFrame, filename: str) -> tuple[list, dict]:
@@ -267,7 +349,11 @@ def _parse_pos(df: pd.DataFrame, filename: str) -> tuple[list, dict]:
 
     order_col  = _detect(df.columns, POS_ALIASES, "order_id")
     ts_col     = _detect(df.columns, POS_ALIASES, "timestamp")
+    rev_col    = _detect(df.columns, POS_ALIASES, "revenue")
     bill_col   = _detect(df.columns, POS_ALIASES, "bill_amount")
+    price_col  = _detect(df.columns, POS_ALIASES, "price")
+    cost_col   = _detect(df.columns, POS_ALIASES, "cost")
+    cat_col    = _detect(df.columns, POS_ALIASES, "category")
     gst_col    = _detect(df.columns, POS_ALIASES, "gst")
     disc_col   = _detect(df.columns, POS_ALIASES, "discount")
     coup_col   = _detect(df.columns, POS_ALIASES, "coupon")
@@ -275,71 +361,93 @@ def _parse_pos(df: pd.DataFrame, filename: str) -> tuple[list, dict]:
     qty_col    = _detect(df.columns, POS_ALIASES, "quantity")
     pay_col    = _detect(df.columns, POS_ALIASES, "payment_mode")
     plat_col   = _detect(df.columns, POS_ALIASES, "platform")
-    peak_col   = _detect(df.columns, POS_ALIASES, "peak_hour")
+    hour_col   = _detect(df.columns, POS_ALIASES, "hour")
+    daypart_col= _detect(df.columns, POS_ALIASES, "daypart")
+    phone_col  = _detect(df.columns, POS_ALIASES, "customer_phone")
+    loc_col    = _detect(df.columns, POS_ALIASES, "cafe_location")
     repeat_col = _detect(df.columns, POS_ALIASES, "repeat_customer")
     cancel_col = _detect(df.columns, POS_ALIASES, "cancel_reason")
     refund_col = _detect(df.columns, POS_ALIASES, "refund_reason")
 
+    # Revenue column takes priority; bill_amount is a fallback
+    amount_col = rev_col or bill_col
+
     if not ts_col and not order_col:
-        raise ValueError("Could not find an 'Order ID' or 'Timestamp' column.")
-    if not bill_col:
-        raise ValueError("Could not find a 'Bill Amount' / 'Total Amount' column.")
+        raise ValueError("Could not find an 'Order ID' or 'Date' column.")
+    if not amount_col:
+        raise ValueError("Could not find a 'Revenue' / 'Bill Amount' column.")
 
     records, skipped = [], 0
     for _, row in df.iterrows():
         try:
-            # Parse date + hour from timestamp
+            # ── Date ──────────────────────────────────────────────────
             raw_ts = row[ts_col] if ts_col else None
             if raw_ts is not None and not pd.isna(raw_ts):
-                ts     = pd.to_datetime(raw_ts)
-                date_s = ts.strftime("%Y-%m-%d")
-                hour   = ts.hour
+                date_s = pd.to_datetime(raw_ts).strftime("%Y-%m-%d")
             else:
                 date_s = datetime.now().strftime("%Y-%m-%d")
-                hour   = 12
 
-            bill = _safe_float(row[bill_col]) if bill_col else 0.0
-            if bill <= 0:
+            # ── Hour ──────────────────────────────────────────────────
+            # Prefer a dedicated Hour column; fall back to parsing timestamp
+            if hour_col:
+                hour = _parse_hour(row[hour_col])
+            elif ts_col and raw_ts is not None and not pd.isna(raw_ts):
+                hour = pd.to_datetime(raw_ts).hour
+            else:
+                hour = 12
+
+            # ── Core financials (exact values from Excel) ─────────────
+            revenue  = _safe_float(row[amount_col])
+            if revenue <= 0:
                 skipped += 1; continue
 
-            # Derive analytics-compatible fields (revenue = bill, item = item_name, etc.)
-            item     = _safe_str(row[item_col], "Unknown")  if item_col  else "Unknown"
-            qty      = _safe_float(row[qty_col], 1.0)       if qty_col   else 1.0
-            platform = _safe_str(row[plat_col], "Dine-in")  if plat_col  else "Dine-in"
-            category = "POS Order"   # generic; real category needs item mapping
+            qty      = _safe_float(row[qty_col], 1.0)       if qty_col    else 1.0
+            # Use exact Price column if present; compute only as fallback
+            price    = _safe_float(row[price_col])           if price_col  else round(revenue / max(qty, 1), 2)
+            # Use exact Cost column if present; compute only as fallback
+            cost     = _safe_float(row[cost_col])            if cost_col   else round(revenue * 0.38, 2)
+
+            item     = _safe_str(row[item_col], "Unknown")   if item_col   else "Unknown"
+            platform = _safe_str(row[plat_col], "Dine-in")   if plat_col   else "Dine-in"
+            category = _safe_str(row[cat_col], "POS Order")  if cat_col    else "POS Order"
 
             records.append({
                 # analytics-compatible keys (used by get_data() → AI layers)
-                "date":        date_s,
-                "item_name":   item,
-                "category":    category,
-                "quantity":    qty,
-                "price":       round(bill / max(qty, 1), 2),
-                "revenue":     bill,
-                "cost":        round(bill * 0.38, 2),
-                "platform":    platform,
+                "date":             date_s,
+                "item_name":        item,
+                "category":         category,
+                "quantity":         qty,
+                "price":            price,
+                "revenue":          revenue,
+                "cost":             cost,
+                "platform":         platform,
                 # POS-specific keys
-                "order_id":    _safe_str(row[order_col]) if order_col else "",
-                "bill_amount": bill,
-                "gst":         _safe_float(row[gst_col])    if gst_col    else None,
-                "discount":    _safe_float(row[disc_col])   if disc_col   else None,
-                "coupon":      _safe_str(row[coup_col])     if coup_col   else "",
-                "payment_mode":_safe_str(row[pay_col])      if pay_col    else "",
-                "hour":        hour,
-                "peak_hour":   _safe_str(row[peak_col])     if peak_col   else _hour_label(hour),
-                "repeat":      _safe_str(row[repeat_col])   if repeat_col else "",
-                "cancel_reason":_safe_str(row[cancel_col])  if cancel_col else "",
-                "refund_reason":_safe_str(row[refund_col])  if refund_col else "",
+                "order_id":         _safe_str(row[order_col])   if order_col   else "",
+                "bill_amount":      revenue,
+                "gst":              _safe_float(row[gst_col])   if gst_col     else None,
+                "discount":         _safe_float(row[disc_col])  if disc_col    else None,
+                "coupon":           _safe_str(row[coup_col])    if coup_col    else "",
+                "payment_mode":     _safe_str(row[pay_col])     if pay_col     else "",
+                "hour":             hour,
+                "peak_hour":        _safe_str(row[daypart_col]) if daypart_col else _hour_label(hour),
+                "customer_phone":   _safe_str(row[phone_col])   if phone_col   else "",
+                "cafe_location":    _safe_str(row[loc_col])     if loc_col     else "",
+                "repeat":           _safe_str(row[repeat_col])  if repeat_col  else "",
+                "cancel_reason":    _safe_str(row[cancel_col])  if cancel_col  else "",
+                "refund_reason":    _safe_str(row[refund_col])  if refund_col  else "",
             })
         except Exception:
             skipped += 1
 
     dates   = sorted(set(r["date"] for r in records))
     detected = {k: v for k, v in {
-        "order_id": order_col, "timestamp": ts_col, "bill_amount": bill_col,
+        "order_id": order_col, "timestamp": ts_col,
+        "revenue": rev_col, "bill_amount": bill_col,
+        "price": price_col, "cost": cost_col, "category": cat_col,
         "gst": gst_col, "discount": disc_col, "coupon": coup_col,
         "item_name": item_col, "quantity": qty_col, "payment_mode": pay_col,
-        "platform": plat_col, "peak_hour": peak_col,
+        "platform": plat_col, "hour": hour_col, "daypart": daypart_col,
+        "customer_phone": phone_col, "cafe_location": loc_col,
         "repeat_customer": repeat_col, "cancel_reason": cancel_col,
         "refund_reason": refund_col,
     }.items() if v}
@@ -368,36 +476,38 @@ def _hour_label(h: int) -> str:
 
 CUST_ALIASES = {
     "name": [
-        "name", "customer name", "full name", "client name",
-        "guest name", "user name",
+        "customer name", "name", "full name", "client name",
+        "guest name", "user name", "customer",
     ],
     "phone": [
-        "phone", "phone number", "mobile", "mobile number",
+        "phone / contact", "phone/contact", "phone",
+        "phone number", "mobile", "mobile number",
         "contact", "contact number", "cell", "whatsapp",
     ],
     "birthday": [
-        "birthday", "dob", "date of birth", "birth date",
-        "birth day", "bday",
+        "birthday / dob", "birthday/dob", "birthday",
+        "dob", "date of birth", "birth date", "birth day", "bday",
     ],
     "visit_frequency": [
         "visit frequency", "visits", "frequency", "visit count",
         "total visits", "no of visits", "number of visits",
     ],
     "favorite_items": [
-        "favorite items", "favourite items", "preferred items",
+        "favourite items", "favorite items", "preferred items",
         "top items", "fav items", "fav dish", "preferred dish",
     ],
     "avg_order_value": [
-        "average order value", "avg order value", "aov",
+        "avg order value", "average order value", "aov",
         "avg order", "avg bill", "average bill", "average spend",
     ],
     "feedback": [
+        "feedback / rating", "feedback/rating",
         "feedback", "sentiment", "rating", "review", "score",
         "feedback sentiment", "customer rating", "nps",
     ],
     "preferred_time": [
-        "preferred time", "ordering time", "preferred ordering time",
-        "visit time", "preferred slot", "usual time",
+        "preferred visit time", "preferred time", "ordering time",
+        "preferred ordering time", "visit time", "preferred slot", "usual time",
     ],
     "platform_source": [
         "platform source", "platform", "source", "acquisition source",
@@ -416,23 +526,54 @@ CUST_ALIASES = {
 
 
 def _parse_customer(df: pd.DataFrame, filename: str) -> tuple[list, dict]:
-    df.columns = [str(c).strip() for c in df.columns]
+    # Strip non-printable chars from column names (handles BOM, zero-width spaces, etc.)
+    df.columns = [_re.sub(r'[^\x20-\x7E]', ' ', str(c)).strip() for c in df.columns]
 
-    name_col   = _detect(df.columns, CUST_ALIASES, "name")
-    phone_col  = _detect(df.columns, CUST_ALIASES, "phone")
-    bday_col   = _detect(df.columns, CUST_ALIASES, "birthday")
-    freq_col   = _detect(df.columns, CUST_ALIASES, "visit_frequency")
-    fav_col    = _detect(df.columns, CUST_ALIASES, "favorite_items")
-    aov_col    = _detect(df.columns, CUST_ALIASES, "avg_order_value")
-    fb_col     = _detect(df.columns, CUST_ALIASES, "feedback")
-    time_col   = _detect(df.columns, CUST_ALIASES, "preferred_time")
-    src_col    = _detect(df.columns, CUST_ALIASES, "platform_source")
-    pts_col    = _detect(df.columns, CUST_ALIASES, "loyalty_points")
-    gender_col = _detect(df.columns, CUST_ALIASES, "gender")
-    age_col    = _detect(df.columns, CUST_ALIASES, "age_group")
+    # Auto-detect header row — some files have a merged title row as pandas header.
+    # We scan the first 5 rows (including what pandas read as df.columns) for the
+    # row that best matches known column aliases, then use it as the real header.
+    all_known = set(_norm(alias) for aliases in CUST_ALIASES.values() for alias in aliases)
+    best_score, header_row = 0, -1
+
+    # Check current df.columns first (row index -1 meaning "already the header")
+    col_score = sum(1 for c in df.columns if _norm(str(c)) in all_known)
+    if col_score >= 3:
+        best_score, header_row = col_score, -1  # columns are already correct
+
+    # Check first 5 data rows
+    for i in range(min(5, len(df))):
+        row_vals = [_norm(str(v)) for v in df.iloc[i] if pd.notna(v)]
+        score = sum(1 for v in row_vals if v in all_known)
+        if score > best_score:
+            best_score, header_row = score, i
+
+    # If a data row scored better than the current columns, promote it to header
+    if header_row >= 0:
+        df.columns = [_re.sub(r'[^\x20-\x7E]', ' ', str(v)).strip() for v in df.iloc[header_row]]
+        df = df.iloc[header_row + 1:].reset_index(drop=True)
+
+    cols = df.columns.tolist()
+    name_col   = _detect(cols, CUST_ALIASES, "name")
+    phone_col  = _detect(cols, CUST_ALIASES, "phone")
+    bday_col   = _detect(cols, CUST_ALIASES, "birthday")
+    freq_col   = _detect(cols, CUST_ALIASES, "visit_frequency")
+    fav_col    = _detect(cols, CUST_ALIASES, "favorite_items")
+    aov_col    = _detect(cols, CUST_ALIASES, "avg_order_value")
+    fb_col     = _detect(cols, CUST_ALIASES, "feedback")
+    time_col   = _detect(cols, CUST_ALIASES, "preferred_time")
+    src_col    = _detect(cols, CUST_ALIASES, "platform_source")
+    pts_col    = _detect(cols, CUST_ALIASES, "loyalty_points")
+    gender_col = _detect(cols, CUST_ALIASES, "gender")
+    age_col    = _detect(cols, CUST_ALIASES, "age_group")
 
     if not name_col and not phone_col:
-        raise ValueError("Could not find a 'Name' or 'Phone Number' column.")
+        cols_found = list(df.columns)[:8]
+        raise ValueError(
+            f"Could not find a customer identifier column. "
+            f"Expected 'Customer Name' or 'Phone / Contact'. "
+            f"Columns detected in your file: {cols_found}. "
+            f"Please ensure your file has at least a Name or Phone column."
+        )
 
     records, skipped = [], 0
     for _, row in df.iterrows():
@@ -508,6 +649,7 @@ async def upload_financial(file: UploadFile = File(...)):
 
     data_store._financial_data = records
     data_store._financial_info = info
+    data_store.save_dataset("financial", records, info)
     return {"success": True, "message": f"Loaded {len(records)} financial records.", "info": info}
 
 
@@ -515,6 +657,7 @@ async def upload_financial(file: UploadFile = File(...)):
 def clear_financial():
     data_store._financial_data = []
     data_store._financial_info = {}
+    data_store.clear_dataset("financial")
     return {"success": True}
 
 
@@ -568,7 +711,7 @@ def financial_summary():
 # ── POS Billing ────────────────────────────────────────────────────────────────
 
 @router.post("/upload/pos")
-async def upload_pos(file: UploadFile = File(...)):
+async def upload_pos(file: UploadFile = File(...), mode: str = Query("replace")):
     _check_ext(file.filename)
     raw = await file.read()
     try:
@@ -582,12 +725,30 @@ async def upload_pos(file: UploadFile = File(...)):
     if not records:
         raise HTTPException(status_code=422, detail="No valid rows found.")
 
+    if mode == "append" and data_store._pos_data:
+        existing_ids = {r["order_id"] for r in data_store._pos_data if r.get("order_id")}
+        new_recs = [r for r in records if not r.get("order_id") or r["order_id"] not in existing_ids]
+        duplicates = len(records) - len(new_recs)
+        merged = data_store._pos_data + new_recs
+        info["mode"] = "append"
+        info["new_records"] = len(new_recs)
+        info["duplicates_skipped"] = duplicates
+        info["rows"] = len(merged)
+        records = merged
+    else:
+        info["mode"] = "replace"
+
     data_store._pos_data = records
     data_store._pos_info = info
-    # Sync into analytics pipeline
     data_store._uploaded_data = records
     data_store._upload_info   = info
-    return {"success": True, "message": f"Loaded {len(records)} POS records.", "info": info}
+    data_store.save_dataset("pos", records, info)
+    msg = (f"Added {info.get('new_records', len(records))} new POS records "
+           f"({info.get('duplicates_skipped', 0)} duplicates skipped). "
+           f"Total: {len(records):,} records."
+           if mode == "append" else
+           f"Loaded {len(records)} POS records.")
+    return {"success": True, "message": msg, "info": info}
 
 
 @router.delete("/upload/pos/clear")
@@ -596,6 +757,7 @@ def clear_pos():
     data_store._pos_info      = {}
     data_store._uploaded_data = []
     data_store._upload_info   = {}
+    data_store.clear_dataset("pos")
     return {"success": True}
 
 
@@ -660,7 +822,7 @@ def pos_summary():
 # ── Customer ───────────────────────────────────────────────────────────────────
 
 @router.post("/upload/customer")
-async def upload_customer(file: UploadFile = File(...)):
+async def upload_customer(file: UploadFile = File(...), mode: str = Query("replace")):
     _check_ext(file.filename)
     raw = await file.read()
     try:
@@ -674,15 +836,42 @@ async def upload_customer(file: UploadFile = File(...)):
     if not records:
         raise HTTPException(status_code=422, detail="No valid rows found.")
 
+    if mode == "append" and data_store._customer_data:
+        phone_map = {r["phone"]: i for i, r in enumerate(data_store._customer_data) if r.get("phone")}
+        merged = list(data_store._customer_data)
+        new_count, updated_count = 0, 0
+        for r in records:
+            phone = r.get("phone", "")
+            if phone and phone in phone_map:
+                merged[phone_map[phone]] = r   # update existing customer
+                updated_count += 1
+            else:
+                merged.append(r)
+                new_count += 1
+        info["mode"] = "append"
+        info["new_records"] = new_count
+        info["updated_records"] = updated_count
+        info["rows"] = len(merged)
+        info["total_customers"] = len(merged)
+        records = merged
+    else:
+        info["mode"] = "replace"
+
     data_store._customer_data = records
     data_store._customer_info = info
-    return {"success": True, "message": f"Loaded {len(records)} customer records.", "info": info}
+    data_store.save_dataset("customer", records, info)
+    msg = (f"Added {info.get('new_records', 0)} new + updated {info.get('updated_records', 0)} existing customers. "
+           f"Total: {len(records):,} customers."
+           if mode == "append" else
+           f"Loaded {len(records)} customer records.")
+    return {"success": True, "message": msg, "info": info}
 
 
 @router.delete("/upload/customer/clear")
 def clear_customer():
     data_store._customer_data = []
     data_store._customer_info = {}
+    data_store.clear_dataset("customer")
     return {"success": True}
 
 
@@ -741,10 +930,346 @@ def customer_summary():
     }
 
 
+# ── Reviews / Sentiment ────────────────────────────────────────────────────────
+
+@router.post("/upload/reviews")
+async def upload_reviews(file: UploadFile = File(...)):
+    _check_ext(file.filename)
+    raw = await file.read()
+    try:
+        df = _read_file(raw, file.filename)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not read file: {e}")
+
+    df.columns = [str(c).strip() for c in df.columns]
+
+    # Require at minimum Review_Text
+    if "Review_Text" not in df.columns:
+        # Try case-insensitive match
+        match = next((c for c in df.columns if c.lower() == "review_text"), None)
+        if match:
+            df = df.rename(columns={match: "Review_Text"})
+        else:
+            raise HTTPException(
+                status_code=422,
+                detail="File must contain a 'Review_Text' column. "
+                       f"Found columns: {list(df.columns)}"
+            )
+
+    from sentiment_engine import get_engine
+    engine = get_engine()
+    try:
+        records, stats = engine.process_dataframe(df, file.filename)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Sentiment processing failed: {e}")
+
+    if not records:
+        raise HTTPException(status_code=422, detail="No valid review rows found.")
+
+    data_store._review_data = records
+    data_store._review_info = engine.info
+    engine.save_state()
+    data_store.save_dataset("reviews_meta", [], engine.info)   # persist info; full records in engine state
+
+    return {
+        "success": True,
+        "message": f"Analysed {len(records)} reviews using TF-IDF + Linear SVM model.",
+        "info": engine.info,
+        "stats_preview": {
+            "positive":          stats.get("positive", 0),
+            "neutral":           stats.get("neutral",  0),
+            "negative":          stats.get("negative", 0),
+            "satisfaction_score": stats.get("satisfaction_score", 0),
+        },
+    }
+
+
+@router.delete("/upload/reviews/clear")
+def clear_reviews():
+    from sentiment_engine import get_engine
+    engine = get_engine()
+    engine._records = []
+    engine._stats   = {}
+    engine._info    = {}
+    engine.clear_state()
+    data_store._review_data = []
+    data_store._review_info = {}
+    data_store.clear_dataset("reviews_meta")
+    return {"success": True}
+
+
+@router.get("/data/reviews/summary")
+def reviews_summary():
+    from sentiment_engine import get_engine
+    engine = get_engine()
+    if not engine.has_data:
+        return {"uploaded": False, "info": {}, "summary": {}, "stats": {}}
+    return {
+        "uploaded": True,
+        "info":     engine.info,
+        "stats":    engine.stats,
+        "recent":   engine.records[-10:],
+    }
+
+
+# ─────────────────────────────────────────────
+# 5. MENU DATA
+# ─────────────────────────────────────────────
+
+MENU_ALIASES = {
+    "category": ["category", "cat", "item category", "menu category", "type"],
+    "item":     ["item", "item name", "name", "product", "dish", "menu item", "description"],
+    "base_price": ["base price", "base price (rs)", "base price(rs)", "price", "base_price",
+                   "base rate", "mrp", "selling price", "rate", "cost"],
+    "season":   ["season", "season code", "availability season", "seasonal"],
+    "dayparts": ["available dayparts", "dayparts", "meal period", "time slots",
+                 "applicable dayparts", "daypart"],
+    "veg":      ["veg / non-veg", "veg/non-veg", "veg", "type", "veg non veg",
+                 "food type", "veg or non-veg"],
+    "notes":    ["notes", "note", "remarks", "comments", "special notes"],
+    "sku":      ["sku", "sku id", "sku_id", "item code", "product code", "code"],
+}
+
+
+def _parse_menu(raw: bytes, filename: str) -> tuple[list, dict]:
+    import openpyxl
+    import io as _io
+
+    # Try to open as Excel; fall back to CSV
+    if filename.lower().endswith(".csv"):
+        df = pd.read_csv(_io.BytesIO(raw))
+    else:
+        # Try "Master Menu" sheet first, then first sheet
+        wb = openpyxl.load_workbook(_io.BytesIO(raw), data_only=True)
+        sheet_name = None
+        for name in wb.sheetnames:
+            if "master" in name.lower() or "menu" in name.lower():
+                sheet_name = name
+                break
+        sheet_name = sheet_name or wb.sheetnames[0]
+        df = pd.read_excel(_io.BytesIO(raw), sheet_name=sheet_name, engine="openpyxl")
+
+    # Drop fully-empty rows and reset
+    df.dropna(how="all", inplace=True)
+    df.reset_index(drop=True, inplace=True)
+
+    # The sheet often has a merged title row at top — drop rows until we find the header
+    # Strategy: find the row whose cells best match our known column names
+    header_row = 0
+    best_score = 0
+    all_known = [alias for aliases in MENU_ALIASES.values() for alias in aliases]
+    for i in range(min(5, len(df))):
+        row_vals = [str(v).lower().strip() for v in df.iloc[i] if pd.notna(v)]
+        score = sum(1 for v in row_vals if v in all_known)
+        if score > best_score:
+            best_score = score
+            header_row = i
+
+    if header_row > 0:
+        df.columns = [str(v).strip() for v in df.iloc[header_row]]
+        df = df.iloc[header_row + 1:].reset_index(drop=True)
+    else:
+        df.columns = [str(c).strip() for c in df.columns]
+
+    cat_col   = _detect(df.columns.tolist(), MENU_ALIASES, "category")
+    item_col  = _detect(df.columns.tolist(), MENU_ALIASES, "item")
+    price_col = _detect(df.columns.tolist(), MENU_ALIASES, "base_price")
+    season_col= _detect(df.columns.tolist(), MENU_ALIASES, "season")
+    day_col   = _detect(df.columns.tolist(), MENU_ALIASES, "dayparts")
+    veg_col   = _detect(df.columns.tolist(), MENU_ALIASES, "veg")
+    notes_col = _detect(df.columns.tolist(), MENU_ALIASES, "notes")
+    sku_col   = _detect(df.columns.tolist(), MENU_ALIASES, "sku")
+
+    if not item_col:
+        raise ValueError(
+            f"Could not find an 'Item' / 'Item Name' column. "
+            f"Found columns: {list(df.columns)}"
+        )
+
+    records, skipped = [], 0
+    categories: dict = {}
+    for _, row in df.iterrows():
+        try:
+            item = _safe_str(row[item_col]) if item_col else ""
+            if not item or item.lower() in ("nan", "none", ""):
+                skipped += 1
+                continue
+
+            cat   = _safe_str(row[cat_col],   "Uncategorized") if cat_col   else "Uncategorized"
+            price = _safe_float(row[price_col], 0.0)            if price_col else 0.0
+            season= _safe_str(row[season_col], "YR")            if season_col else "YR"
+            days  = _safe_str(row[day_col],    "")              if day_col    else ""
+            veg   = _safe_str(row[veg_col],    "")              if veg_col    else ""
+            notes = _safe_str(row[notes_col],  "")              if notes_col  else ""
+            sku   = _safe_str(row[sku_col],    "")              if sku_col    else ""
+
+            records.append({
+                "sku":      sku,
+                "category": cat,
+                "item":     item,
+                "base_price": price,
+                "season":   season,
+                "dayparts": days,
+                "veg":      veg,
+                "notes":    notes,
+            })
+            categories[cat] = categories.get(cat, 0) + 1
+        except Exception:
+            skipped += 1
+
+    prices = [r["base_price"] for r in records if r["base_price"] > 0]
+
+    detected = {k: v for k, v in {
+        "category": cat_col, "item": item_col, "base_price": price_col,
+        "season": season_col, "dayparts": day_col, "veg": veg_col,
+        "notes": notes_col, "sku": sku_col,
+    }.items() if v}
+
+    seasons_found = sorted(set(r["season"] for r in records if r["season"]))
+
+    info = {
+        "filename":  filename,
+        "rows":      len(records),
+        "skipped":   skipped,
+        "columns_detected": detected,
+        "total_skus":    len(records),
+        "total_categories": len(categories),
+        "price_range": {
+            "min": round(min(prices), 2) if prices else 0,
+            "max": round(max(prices), 2) if prices else 0,
+        },
+        "seasons": seasons_found,
+        "uploaded_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    return records, info
+
+
+@router.post("/upload/menu")
+async def upload_menu(file: UploadFile = File(...)):
+    if not any(file.filename.lower().endswith(ext) for ext in (".xlsx", ".xls", ".csv")):
+        raise HTTPException(status_code=400, detail="Only .xlsx, .xls, or .csv files are supported.")
+    raw = await file.read()
+    try:
+        records, info = _parse_menu(raw, file.filename)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Parse error: {e}")
+
+    if not records:
+        raise HTTPException(status_code=422, detail="No valid menu rows found.")
+
+    data_store._menu_data = records
+    data_store._menu_info = info
+    data_store.save_dataset("menu", records, info)
+    return {"success": True, "message": f"Loaded {len(records)} menu items.", "info": info}
+
+
+@router.delete("/upload/menu/clear")
+def clear_menu():
+    data_store._menu_data = []
+    data_store._menu_info = {}
+    data_store.clear_dataset("menu")
+    return {"success": True}
+
+
+@router.get("/data/menu/summary")
+def menu_summary():
+    data = data_store._menu_data
+    info = data_store._menu_info
+    if not data:
+        return {"uploaded": False, "info": {}, "summary": {}}
+
+    # Category breakdown
+    cat_agg: dict = {}
+    for r in data:
+        c = r["category"]
+        cat_agg[c] = cat_agg.get(c, 0) + 1
+
+    # Veg/Non-Veg split
+    veg_agg: dict = {}
+    for r in data:
+        v = r["veg"] or "Not specified"
+        veg_agg[v] = veg_agg.get(v, 0) + 1
+
+    # Season breakdown
+    season_agg: dict = {}
+    for r in data:
+        s = r["season"] or "YR"
+        season_agg[s] = season_agg.get(s, 0) + 1
+
+    prices = [r["base_price"] for r in data if r["base_price"] > 0]
+
+    return {
+        "uploaded": True,
+        "info": info,
+        "summary": {
+            "total_skus":        len(data),
+            "total_categories":  len(cat_agg),
+            "price_min":         round(min(prices), 0) if prices else 0,
+            "price_max":         round(max(prices), 0) if prices else 0,
+            "price_avg":         round(sum(prices) / len(prices), 0) if prices else 0,
+            "seasonal_items":    sum(v for k, v in season_agg.items() if k != "YR"),
+            "year_round_items":  season_agg.get("YR", 0),
+        },
+        "category_breakdown": [{"category": k, "count": v} for k, v in sorted(cat_agg.items(), key=lambda x: -x[1])],
+        "veg_breakdown":      [{"type": k, "count": v} for k, v in veg_agg.items()],
+        "season_breakdown":   [{"season": k, "count": v} for k, v in season_agg.items()],
+        "recent": data[:20],
+    }
+
+
+# ── Paginated records viewer ───────────────────────────────────────────────────
+
+@router.get("/data/{dtype}/records")
+def get_records(dtype: str, page: int = 1, per_page: int = 50, search: str = ""):
+    """Return a paginated, optionally searched slice of any uploaded dataset."""
+    from sentiment_engine import get_engine
+
+    dtype_map = {
+        "financial": data_store._financial_data,
+        "pos":       data_store._pos_data,
+        "customer":  data_store._customer_data,
+        "menu":      data_store._menu_data,
+    }
+    if dtype == "reviews":
+        data = get_engine().records
+    elif dtype in dtype_map:
+        data = dtype_map[dtype]
+    else:
+        raise HTTPException(status_code=400, detail=f"Unknown dataset type: {dtype}")
+
+    if not data:
+        return {"total": 0, "page": page, "per_page": per_page, "pages": 0, "records": []}
+
+    # Search: filter rows where any string value contains the search term
+    if search:
+        q = search.lower()
+        filtered = [r for r in data if any(q in str(v).lower() for v in r.values())]
+    else:
+        filtered = data
+
+    total = len(filtered)
+    pages = max(1, (total + per_page - 1) // per_page)
+    page  = max(1, min(page, pages))
+    start = (page - 1) * per_page
+    end   = start + per_page
+
+    return {
+        "total":    total,
+        "page":     page,
+        "per_page": per_page,
+        "pages":    pages,
+        "records":  filtered[start:end],
+    }
+
+
 # ── Aggregate status ───────────────────────────────────────────────────────────
 
 @router.get("/upload/status/all")
 def upload_status_all():
+    from sentiment_engine import get_engine
+    engine = get_engine()
     return {
         "financial": {
             "uploaded": bool(data_store._financial_data),
@@ -757,6 +1282,14 @@ def upload_status_all():
         "customer": {
             "uploaded": bool(data_store._customer_data),
             "info":     data_store._customer_info,
+        },
+        "reviews": {
+            "uploaded": engine.has_data,
+            "info":     engine.info,
+        },
+        "menu": {
+            "uploaded": bool(data_store._menu_data),
+            "info":     data_store._menu_info,
         },
     }
 

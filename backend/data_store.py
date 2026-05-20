@@ -3,10 +3,49 @@ Shared mutable state and analytics helpers.
 Imported by both main.py and chatbot.py to avoid circular imports.
 """
 from __future__ import annotations
+import json
+import os
 import random
 from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Optional
+
+# ─── Persistence helpers ─────────────────────────────────────────────────────
+_DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
+
+
+def save_dataset(name: str, data: list, info: dict) -> None:
+    """Persist a dataset to disk so it survives server restarts."""
+    os.makedirs(_DATA_DIR, exist_ok=True)
+    path = os.path.join(_DATA_DIR, f"{name}.json")
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"data": data, "info": info}, f, ensure_ascii=False)
+    except Exception:
+        pass  # never crash an upload due to disk write failure
+
+
+def load_dataset(name: str) -> tuple[list, dict]:
+    """Load a persisted dataset from disk. Returns ([], {}) if not found."""
+    path = os.path.join(_DATA_DIR, f"{name}.json")
+    if not os.path.exists(path):
+        return [], {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            obj = json.load(f)
+        return obj.get("data", []), obj.get("info", {})
+    except Exception:
+        return [], {}
+
+
+def clear_dataset(name: str) -> None:
+    """Remove a persisted dataset file from disk."""
+    path = os.path.join(_DATA_DIR, f"{name}.json")
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+    except Exception:
+        pass
 
 # ─── Global state (mutated by main.py / multi_upload.py) ─────────────────────
 _uploaded_data: list = []       # legacy single-file upload
@@ -21,14 +60,22 @@ _pos_info: dict  = {}
 _customer_data: list = []
 _customer_info: dict = {}
 
+# Sentiment / Reviews dataset
+_review_data: list = []
+_review_info: dict = {}
+
+# Menu dataset
+_menu_data: list = []
+_menu_info: dict = {}
+
 
 def get_data() -> list:
-    """Priority: POS upload → legacy upload → mock."""
+    """Priority: POS upload → legacy upload → empty (no mock fallback)."""
     if _pos_data:
         return _pos_data
     if _uploaded_data:
         return _uploaded_data
-    return _MOCK_SALES
+    return []
 
 # ─── Mock seed ───────────────────────────────────────────────────────────────
 _MOCK_MENU = [
@@ -140,3 +187,27 @@ def weekday_forecast(data: list, days: int = 7) -> list:
             "weather": "Rainy" if i == 3 else "Clear", "is_weekend": wd >= 5,
         })
     return result
+
+
+# ─── Auto-load persisted data on startup ─────────────────────────────────────
+# These assignments run once when the module is first imported,
+# restoring any datasets that survived a previous server session.
+_loaded = load_dataset("financial")
+_financial_data, _financial_info = _loaded
+
+_loaded = load_dataset("pos")
+_pos_data, _pos_info = _loaded
+if _pos_data:
+    _uploaded_data = _pos_data
+    _upload_info   = _pos_info
+
+_loaded = load_dataset("customer")
+_customer_data, _customer_info = _loaded
+
+_loaded = load_dataset("reviews_meta")   # stats + info only; records via sentiment engine
+_review_data, _review_info = _loaded
+
+_loaded = load_dataset("menu")
+_menu_data, _menu_info = _loaded
+
+del _loaded  # clean up temp variable

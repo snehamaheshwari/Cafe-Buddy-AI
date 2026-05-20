@@ -1,33 +1,29 @@
 import { NavLink, useLocation } from 'react-router-dom'
 import { useEffect } from 'react'
-import { LayoutDashboard, Database, Cpu, Brain, Zap, Bot, Coffee, ChevronRight, MessageSquare, X } from 'lucide-react'
+import { LayoutDashboard, Database, BarChart2, TrendingUp, Lightbulb, Rocket, MessageCircle, Coffee, ChevronRight, X, Bell } from 'lucide-react'
 import { useSidebar } from '../context/SidebarContext'
 
 const NAV_ITEMS = [
-  { to: '/',                   label: 'Dashboard',            icon: LayoutDashboard },
-  { to: '/data-collection',    label: 'Data Collection',      icon: Database        },
-  { to: '/data-engineering',   label: 'Data Engineering',     icon: Cpu             },
-  { to: '/ai-intelligence',    label: 'AI / ML Intelligence', icon: Brain           },
-  { to: '/decision-engine',    label: 'Decision Engine',      icon: Zap             },
-  { to: '/cafe-os',            label: 'Autonomous Café OS',   icon: Bot             },
-  { to: '/chatbot',            label: 'AI Chat Assistant',    icon: MessageSquare   },
+  { to: '/',                label: 'Home',                   icon: LayoutDashboard, desc: 'Overview & KPIs'          },
+  { to: '/data-collection', label: 'Upload My Data',         icon: Database,        desc: 'Excel & API import'       },
+  { to: '/data-engineering',label: 'Reports & Insights',     icon: BarChart2,       desc: 'Trends & summaries'       },
+  { to: '/ai-intelligence', label: 'Smart Analytics',        icon: TrendingUp,      desc: 'AI-powered predictions'   },
+  { to: '/decision-engine', label: 'What To Do Next',        icon: Lightbulb,       desc: 'Action recommendations'   },
+  { to: '/cafe-os',         label: 'Auto-Pilot Mode',        icon: Rocket,          desc: 'Automated operations'     },
+  { to: '/chatbot',         label: 'Ask Cafe Buddy',         icon: MessageCircle,   desc: 'Chat with your AI helper' },
+  { to: '/notifications',   label: 'WhatsApp Alerts',        icon: Bell,            desc: 'Free daily summaries'     },
 ]
 
 export default function Sidebar() {
   const location = useLocation()
   const { isOpen, close } = useSidebar()
 
-  // Close on route change (mobile UX)
   useEffect(() => { close() }, [location.pathname, close])
 
   return (
     <>
-      {/* Mobile backdrop */}
       {isOpen && (
-        <div
-          className="fixed inset-0 bg-black/50 z-20 md:hidden"
-          onClick={close}
-        />
+        <div className="fixed inset-0 bg-black/50 z-20 md:hidden" onClick={close} />
       )}
 
       <aside className={`
@@ -35,56 +31,54 @@ export default function Sidebar() {
         transition-transform duration-200
         ${isOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
       `}>
-        {/* Logo row */}
-        <div className="px-5 py-5 border-b border-slate-800 flex items-center justify-between">
+        {/* Logo */}
+        <div className="px-4 py-4 border-b border-slate-800 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 bg-brand-500 rounded flex items-center justify-center flex-shrink-0">
+            <div className="w-9 h-9 bg-brand-500 rounded-xl flex items-center justify-center flex-shrink-0 shadow-lg">
               <Coffee size={18} className="text-white" />
             </div>
             <div>
               <div className="text-white font-bold text-base leading-tight">Cafe Buddy</div>
-              <div className="text-slate-400 text-xs">AI Café Operating System</div>
+              <div className="text-slate-400 text-xs">Your AI Café Manager</div>
             </div>
           </div>
-          {/* Close button — mobile only */}
-          <button
-            className="md:hidden text-slate-400 hover:text-white p-1 rounded"
-            onClick={close}
-            aria-label="Close menu"
-          >
+          <button className="md:hidden text-slate-400 hover:text-white p-1 rounded" onClick={close} aria-label="Close menu">
             <X size={20} />
           </button>
         </div>
 
-        {/* Navigation */}
-        <nav className="flex-1 overflow-y-auto py-4 px-3">
-          <div className="text-slate-500 text-xs font-semibold uppercase tracking-wider px-3 mb-3">
-            Navigation
-          </div>
+        {/* Nav */}
+        <nav className="flex-1 overflow-y-auto py-3 px-2">
+          <p className="text-slate-600 text-xs font-semibold uppercase tracking-wider px-2 mb-2">Menu</p>
           <ul className="space-y-0.5">
             {NAV_ITEMS.map((item) => {
               const Icon = item.icon
-              const isActive =
-                item.to === '/'
-                  ? location.pathname === '/'
-                  : location.pathname.startsWith(item.to)
+              const isActive = item.to === '/' ? location.pathname === '/' : location.pathname.startsWith(item.to)
+              const isWhatsApp = item.to === '/notifications'
 
               return (
                 <li key={item.to}>
                   <NavLink
                     to={item.to}
-                    className={`flex items-center gap-3 px-3 py-2.5 rounded text-sm transition-colors group ${
-                      isActive
-                        ? 'bg-slate-800 text-white'
-                        : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'
+                    className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all group ${
+                      isActive ? 'bg-slate-800 text-white shadow-sm' : 'text-slate-400 hover:bg-slate-800/70 hover:text-slate-200'
                     }`}
                   >
                     <Icon
                       size={16}
-                      className={isActive ? 'text-brand-400' : 'text-slate-500 group-hover:text-slate-300'}
+                      className={`flex-shrink-0 ${
+                        isActive ? 'text-brand-400'
+                        : isWhatsApp ? 'text-green-500 group-hover:text-green-400'
+                        : 'text-slate-500 group-hover:text-slate-300'
+                      }`}
                     />
-                    <span className="flex-1 truncate font-medium">{item.label}</span>
-                    {isActive && <ChevronRight size={14} className="text-brand-400 flex-shrink-0" />}
+                    <div className="flex-1 min-w-0">
+                      <div className="font-medium leading-tight truncate">{item.label}</div>
+                      <div className={`text-xs leading-tight truncate mt-0.5 ${
+                        isActive ? 'text-slate-400' : 'text-slate-600 group-hover:text-slate-500'
+                      }`}>{item.desc}</div>
+                    </div>
+                    {isActive && <ChevronRight size={13} className="text-brand-400 flex-shrink-0" />}
                   </NavLink>
                 </li>
               )
@@ -93,12 +87,12 @@ export default function Sidebar() {
         </nav>
 
         {/* Footer */}
-        <div className="px-5 py-4 border-t border-slate-800">
+        <div className="px-4 py-3 border-t border-slate-800">
           <div className="flex items-center gap-2">
             <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-            <span className="text-slate-400 text-xs">All systems operational</span>
+            <span className="text-slate-400 text-xs">All systems live</span>
           </div>
-          <div className="text-slate-600 text-xs mt-1">v2.0.0 Prototype</div>
+          <div className="text-slate-600 text-xs mt-0.5">Cafe Buddy v2.1</div>
         </div>
       </aside>
     </>

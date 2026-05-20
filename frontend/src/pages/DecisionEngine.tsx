@@ -5,6 +5,7 @@ import { api } from '../lib/api'
 
 const TYPE_ICONS: Record<string, string> = {
   pricing: '💰', inventory: '📦', marketing: '📣', staffing: '👥', menu: '🍽️',
+  customer: '⭐', operations: '🔧',
 }
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -13,6 +14,12 @@ const CATEGORY_COLORS: Record<string, string> = {
   'Marketing': 'bg-purple-50 border-purple-200',
   'Operations': 'bg-sky-50 border-sky-200',
   'Menu Optimization': 'bg-emerald-50 border-emerald-200',
+  'Customer Experience': 'bg-rose-50 border-rose-200',
+  'Reputation Management': 'bg-orange-50 border-orange-200',
+}
+
+const SOURCE_BADGE: Record<string, string> = {
+  sentiment: 'bg-rose-100 text-rose-700 border-rose-200',
 }
 
 export default function DecisionEngine() {
@@ -104,6 +111,11 @@ export default function DecisionEngine() {
                     <div className="flex flex-wrap items-center gap-2 mb-2">
                       <span className={priorityBadge(d.priority)}>{d.priority}</span>
                       <span className="badge bg-slate-100 text-slate-600">{d.category}</span>
+                      {d.source && SOURCE_BADGE[d.source] && (
+                        <span className={`badge border ${SOURCE_BADGE[d.source]}`}>
+                          {d.source === 'sentiment' ? '⭐ Sentiment' : d.source}
+                        </span>
+                      )}
                       <span className={`badge ${d.status === 'pending' ? 'badge-pending' : d.status === 'approved' ? 'badge-approved' : 'badge-rejected'}`}>
                         {d.status}
                       </span>

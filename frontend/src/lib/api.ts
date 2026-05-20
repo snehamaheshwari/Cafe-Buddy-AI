@@ -49,26 +49,49 @@ export const api = {
         return r.json()
       })
     },
-    pos: (file: File) => {
+    pos: (file: File, mode: 'replace' | 'append' = 'replace') => {
       const fd = new FormData(); fd.append('file', file)
-      return fetch(`${BASE}/upload/pos`, { method: 'POST', body: fd }).then(async (r) => {
+      return fetch(`${BASE}/upload/pos?mode=${mode}`, { method: 'POST', body: fd }).then(async (r) => {
         if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || 'Upload failed') }
         return r.json()
       })
     },
-    customer: (file: File) => {
+    customer: (file: File, mode: 'replace' | 'append' = 'replace') => {
       const fd = new FormData(); fd.append('file', file)
-      return fetch(`${BASE}/upload/customer`, { method: 'POST', body: fd }).then(async (r) => {
+      return fetch(`${BASE}/upload/customer?mode=${mode}`, { method: 'POST', body: fd }).then(async (r) => {
         if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || 'Upload failed') }
         return r.json()
       })
     },
+    records: (type: string, page = 1, perPage = 50, search = '') =>
+      get(`/data/${type}/records?page=${page}&per_page=${perPage}&search=${encodeURIComponent(search)}`),
     clearFinancial:  () => del('/upload/financial/clear'),
     clearPos:        () => del('/upload/pos/clear'),
     clearCustomer:   () => del('/upload/customer/clear'),
+    clearReviews:    () => del('/upload/reviews/clear'),
+    clearMenu:       () => del('/upload/menu/clear'),
     summaryFinancial: () => get('/data/financial/summary'),
     summaryPos:       () => get('/data/pos/summary'),
     summaryCustomer:  () => get('/data/customer/summary'),
+    summaryReviews:   () => get('/data/reviews/summary'),
+    summaryMenu:      () => get('/data/menu/summary'),
+    menu: (file: File) => {
+      const fd = new FormData(); fd.append('file', file)
+      return fetch(`${BASE}/upload/menu`, { method: 'POST', body: fd }).then(async (r) => {
+        if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || 'Upload failed') }
+        return r.json()
+      })
+    },
+    reviews: (file: File) => {
+      const fd = new FormData(); fd.append('file', file)
+      return fetch(`${BASE}/upload/reviews`, { method: 'POST', body: fd }).then(async (r) => {
+        if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || 'Upload failed') }
+        return r.json()
+      })
+    },
+  },
+  sentiment: {
+    overview: () => get('/sentiment/overview'),
   },
   dashboard: {
     overview: () => get('/dashboard/overview'),
@@ -81,6 +104,7 @@ export const api = {
   layer2: {
     pipelineStatus: () => get('/layer2/pipeline-status'),
     processedData:  () => get('/layer2/processed-data'),
+    insights:       () => get('/layer2/insights'),
   },
   layer3: {
     forecast:        () => get('/layer3/forecast'),
@@ -95,5 +119,19 @@ export const api = {
   layer5: {
     autonomousActions: () => get('/layer5/autonomous-actions'),
     kpis:              () => get('/layer5/kpis'),
+  },
+  notifications: {
+    sendWhatsApp: (body: { idInstance: string; apiTokenInstance: string; phone: string; message?: string }) =>
+      post('/notifications/whatsapp/send', body),
+    getSummary: () => get<{ preview: string }>('/notifications/whatsapp/summary'),
+  },
+  ml: {
+    forecast:         () => get('/ml/forecast'),
+    platformForecast: () => get('/ml/platform-forecast'),
+    peakHours:        () => get('/ml/peak-hours'),
+    cancellationRisk: () => get('/ml/cancellation-risk'),
+    crossSell:        () => get('/ml/cross-sell'),
+    dynamicPricing:   () => get('/ml/dynamic-pricing'),
+    modelComparison:  () => get('/ml/model-comparison'),
   },
 }

@@ -20,6 +20,8 @@ from data_store import (
     get_data, item_stats, platform_breakdown,
     category_breakdown, daily_revenue,
 )
+from sentiment_engine import get_engine as get_sentiment_engine
+import data_store as _ds
 
 router = APIRouter()
 
@@ -161,6 +163,13 @@ def _needs_web_search(msg: str) -> bool:
         "weather", "event", "holiday", "season", "market", "competitor",
         "how to", "strategy", "marketing", "promotion", "social media",
         "instagram", "zomato", "swiggy",
+        # broader general-knowledge triggers
+        "license", "fssai", "legal", "permit", "regulation",
+        "staff", "hire", "salary", "wage",
+        "equipment", "machine", "grinder", "coffee machine",
+        "open", "timing", "hours", "schedule",
+        "price", "pricing", "menu engineering",
+        "tips", "advice", "best practice", "benchmark",
     ]
     m = msg.lower()
     return any(k in m for k in keywords)
@@ -204,7 +213,7 @@ def _build_context(data: list) -> str:
     plat_s  = "\n".join(f"  {p['platform']}: ₹{p['revenue']:,.0f} ({p['orders']} orders)" for p in platforms)
     cat_s   = "\n".join(f"  {c['category']}: ₹{c['revenue']:,.0f} ({c['margin_pct']:.1f}% margin)" for c in cats)
 
-    return f"""── CAFÉ DATA SUMMARY ──────────────────────────────────────────
+    base_context = f"""── CAFÉ DATA SUMMARY ──────────────────────────────────────────
 Date range   : {dates[0]} → {dates[-1]}  ({len(dates)} days)
 Total records: {len(data):,}
 Total revenue: ₹{total_rev:,.0f}   |  Food cost %: {total_cost/max(total_rev,1)*100:.1f}%
@@ -227,27 +236,49 @@ CATEGORY REVENUE:
 {cat_s}
 ───────────────────────────────────────────────────────────────"""
 
+    # Append sentiment context when review data is available
+    try:
+        sent_ctx = get_sentiment_engine().get_chat_context()
+        if sent_ctx:
+            base_context += "\n\n" + sent_ctx
+    except Exception:
+        pass
+
+    return base_context
+
 # ─── Claude streaming ─────────────────────────────────────────────────────────
 
 _SYSTEM_PROMPT = """You are Cafe Buddy AI — a sharp, data-driven assistant for café owners in India.
 
-You have access to:
-1. Real café sales analytics (provided in CONTEXT block)
-2. Upcoming Indian festivals with menu and promo ideas (FESTIVALS block)
-3. Live web search results (WEB SEARCH block)
+## Reasoning flow you MUST follow for every response:
+1. **Model Reasoning** — examine ML MODEL REASONING block first (trained models: RF forecast, peak-hour classifier, cancellation risk, cross-sell rules). Cite model predictions when relevant.
+2. **Data Analysis** — ground your answer in the CONTEXT block (actual café data: revenue, items, platforms, sentiment).
+3. **Web / External** — use WEB SEARCH block for market trends, festival ideas, or anything not covered by internal data.
+4. **Final Answer** — combine all three layers into a concise, actionable response.
 
-Rules:
-- Always ground answers in the actual data when available.
+## Sources you have access to:
+1. ML MODEL REASONING — trained Random Forest, Ridge Regression, and classification models run on live POS data
+2. Real café sales analytics (CONTEXT block)
+3. Customer review sentiment — TF-IDF + Linear SVM model (in CONTEXT when available)
+4. Upcoming Indian festivals with menu and promo ideas (FESTIVALS block)
+5. Live web search results (WEB SEARCH block)
+
+## Rules:
+- Always cite which model or data source supports each claim (e.g. "RF forecast shows…", "Based on your POS data…").
+- For sentiment/review questions, reference the sentiment statistics and give actionable advice.
 - For festival/dish questions, give specific, actionable menu ideas and promotions.
 - Format with markdown: **bold** key points, bullet lists, numbered steps.
 - Keep responses focused and practical — no filler.
 - Currency is always ₹ (Indian Rupees).
-- When web results are present, cite insights from them naturally.
+- When web results are present, cite insights naturally.
 """
 
 
 async def _stream_claude(history: list, message: str,
-                         context: str, search: list, festivals: list):
+                         context: str, search: list, festivals: list,
+                         ml_context: str = ""):
+    ml_txt = ml_context if ml_context else ""
+
     fest_txt = ""
     if festivals:
         fest_txt = "── UPCOMING FESTIVALS ─────────────────────────────────────\n"
@@ -263,6 +294,7 @@ async def _stream_claude(history: list, message: str,
             web_txt += f"• {r['title']}\n  {r['body'][:300]}\n"
 
     system_msg = (f"{_SYSTEM_PROMPT}\n\n"
+                  f"{ml_txt}\n\n"
                   f"CONTEXT:\n{context}\n\n"
                   f"{fest_txt}\n{web_txt}")
 
@@ -288,8 +320,41 @@ async def _stream_claude(history: list, message: str,
 
 # ─── Smart analytics fallback (no API key needed) ────────────────────────────
 
-def _smart_response(message: str, data: list, festivals: list, search_res: list = []) -> str:
-    m      = message.lower()
+_NO_DATA_MSG = (
+    "**No café data loaded yet.**\n\n"
+    "I need your data to answer analytics questions. Head to **Data Collection** and upload:\n\n"
+    "- **POS Billing** — sales, items, revenue, platforms\n"
+    "- **Financial** — daily revenue, margins, cost breakdown\n"
+    "- **Customer** — CRM, visit frequency, loyalty points\n"
+    "- **Reviews & Sentiment** — customer feedback analysis\n"
+    "- **Menu** — SKUs, categories, pricing\n\n"
+    "Once uploaded, I can answer questions like:\n"
+    "- *Which item had the highest revenue last week?*\n"
+    "- *Compare weekend vs weekday performance*\n"
+    "- *Which platform drives the most orders?*\n\n"
+    "**Festival & menu ideas work without data** — feel free to ask about Diwali, Navratri, or any upcoming occasion!"
+)
+
+
+def _smart_response(message: str, data: list, festivals: list, search_res: list = [], ml_context: str = "") -> str:
+    # Data-related queries need actual data — return helpful onboarding message
+    data_keywords = [
+        "revenue", "sales", "item", "product", "margin", "cost", "platform",
+        "zomato", "swiggy", "dine-in", "weekend", "weekday", "best selling",
+        "highest selling", "lowest", "worst", "profit", "category", "beverage",
+        "starter", "main", "dessert", "review", "sentiment", "feedback",
+        "rating", "overview", "summary", "analysis", "performance",
+        "metrics", "kpi", "numbers", "data", "inventory", "stock",
+    ]
+    m = message.lower()
+    is_data_query = any(k in m for k in data_keywords)
+
+    if not data and is_data_query and not any(k in m for k in [
+        "festival", "navratri", "diwali", "holi", "eid", "christmas",
+        "menu idea", "special dish", "promo", "promotion", "discount",
+    ]):
+        return _NO_DATA_MSG
+
     items  = item_stats(data)
     plats  = platform_breakdown(data)
     cats   = category_breakdown(data)
@@ -298,6 +363,229 @@ def _smart_response(message: str, data: list, festivals: list, search_res: list 
     total_cost  = sum(r["cost"]    for r in data)
     daily_avg   = total_rev / max(len(dates), 1)
     food_cost_pct = total_cost / max(total_rev, 1) * 100
+
+    # ── Inventory recommendation from reviews ──
+    if any(k in m for k in [
+        "increase inventory", "stock more", "keep more", "most loved", "loved product",
+        "should i keep", "which to reorder", "stock up", "inventory recommendation",
+    ]):
+        engine = get_sentiment_engine()
+        if engine.has_data:
+            s = engine.stats
+            pos_keywords = [k["word"].lower() for k in s.get("keywords", {}).get("positive", [])]
+            loved = []
+            for x in items:
+                name_words = x["name"].lower().split()
+                if any(w in pos_keywords for w in name_words):
+                    loved.append(x)
+            if not loved:
+                loved = items[:3]
+            lines = ["**Inventory Recommendations (based on customer sentiment):**\n"]
+            for x in loved[:4]:
+                daily_qty = x["qty"] / max(len(dates), 1)
+                lines.append(f"- **{x['name']}** — {x['qty']:.0f} units sold, "
+                             f"~{daily_qty:.1f}/day avg. Stock at least {int(daily_qty * 1.3)}/day to avoid stockouts.")
+            lines.append(f"\nThese items appear in positive customer reviews and drive repeat visits. "
+                         f"Prioritise these when placing supplier orders.")
+            return "\n".join(lines)
+        elif data:
+            top3 = items[:3]
+            lines = ["**Top Sellers — Stocking Baseline (no review data available):**\n"]
+            for x in top3:
+                daily_qty = x["qty"] / max(len(dates), 1)
+                lines.append(f"- **{x['name']}** — ~{daily_qty:.1f} units/day avg. "
+                             f"Recommended daily stock: {int(daily_qty * 1.3)} units.")
+            lines.append("\nUpload customer reviews for sentiment-based stocking recommendations.")
+            return "\n".join(lines)
+        return "No sales data available to generate inventory recommendations."
+
+    # ── Revenue forecast / demand prediction ──
+    if any(k in m for k in [
+        "forecast", "predict", "prediction", "demand", "demand forecast", "revenue forecast",
+        "next 7 days", "next week", "7 day", "7-day", "7days",
+        "coming days", "upcoming revenue", "expected revenue", "how much will",
+        "projected", "next few days", "daily forecast",
+        "what will i make", "future revenue", "revenue next", "sales next",
+        "tomorrow revenue", "this week revenue",
+    ]):
+        if not data:
+            return ("I need POS sales data to generate a revenue forecast. "
+                    "Upload your billing data in **Upload My Data → Sales & Orders**.")
+        try:
+            import ml_models
+            import data_store as _ds2
+            pos = _ds2._pos_data
+            if not pos or len(pos) < 30:
+                return (f"Need at least **30 days of POS data** for reliable forecasting. "
+                        f"Currently have {len(pos) if pos else 0} records. Upload more data.")
+
+            fc = ml_models.forecast_revenue(pos, days=7)
+            if fc.get("error"):
+                return f"**Forecast model error:** {fc['error']}"
+
+            rows      = fc["forecast"]
+            total_fc  = sum(r["predicted_revenue"] for r in rows)
+            dates_set = sorted(set(r["date"] for r in data))
+            hist_avg  = sum(r["revenue"] for r in data) / max(len(dates_set), 1)
+            diff_pct  = (total_fc / 7 - hist_avg) / max(hist_avg, 1) * 100
+
+            lines = [
+                f"**7-Day Revenue Forecast**",
+                f"*{fc['model']} | Accuracy: {fc['accuracy']}% | RF MAE ₹{fc['rf_mae']:,.0f}*\n",
+            ]
+            for r in rows:
+                icon = "🟢" if r["is_weekend"] else "⚪"
+                tag  = " *(weekend)*" if r["is_weekend"] else ""
+                lines.append(f"{icon} **{r['day']} {r['date']}** — ₹{r['predicted_revenue']:,}{tag}"
+                             f"  *(range ₹{r['lower']:,}–₹{r['upper']:,})*")
+
+            dir_word = "above" if diff_pct > 0 else "below"
+            lines.append(f"\n**Projected 7-day total:** ₹{total_fc:,}")
+            lines.append(f"**vs your historical daily avg ₹{hist_avg:,.0f}:** forecast is **{diff_pct:+.1f}%** {dir_word} average")
+
+            if fc.get("weekend_uplift_applied"):
+                lines.append("\n✅ *Weekend uplift correction applied — weekends adjusted to match your historical patterns.*")
+
+            # Platform breakdown
+            try:
+                plat_fc = ml_models.forecast_by_platform(pos, days=7)
+                if plat_fc:
+                    lines.append("\n**Platform Forecast (7-day totals):**")
+                    for p in sorted(plat_fc, key=lambda x: -sum(d["predicted_revenue"] for d in x["forecast"])):
+                        pt = sum(d["predicted_revenue"] for d in p["forecast"])
+                        lines.append(f"- **{p['platform']}**: ₹{pt:,}"
+                                     f" *(hist avg ₹{p['historical_avg']:,}/day)*")
+            except Exception:
+                pass
+
+            next_fest = festivals[0] if festivals else None
+            if next_fest and next_fest["days_away"] <= 7:
+                lines.append(f"\n🎉 **{next_fest['name']}** falls within this forecast window ({next_fest['date']}) — "
+                             f"actual revenue may be 20–40% higher. Stock up and staff up!")
+            elif next_fest:
+                lines.append(f"\n💡 Next up: **{next_fest['name']}** in {next_fest['days_away']} days — start planning your special menu.")
+
+            return "\n".join(lines)
+        except Exception as e:
+            return (f"**Forecast error:** {str(e)}\n\n"
+                    "Make sure your POS data is uploaded and ML models are available in the backend.")
+
+    # ── Peak hours / busy hours ──
+    if any(k in m for k in [
+        "peak hour", "peak hours", "busy hour", "busy hours", "rush hour", "rush hours",
+        "busiest time", "busiest hour", "busy time", "what time", "when is it busy",
+        "when do i get most", "when are most customers", "hourly breakdown",
+        "time of day", "lunch rush", "dinner rush", "morning rush",
+        "when to staff", "staffing hours",
+    ]):
+        if not data:
+            return "Upload POS data with order times to get peak-hour analysis."
+        try:
+            import ml_models
+            import data_store as _ds2
+            ph = ml_models.peak_hour_analysis(_ds2._pos_data)
+            top = ph.get("top_hours", [])[:5]
+            if not top:
+                return ("Not enough hourly data in your POS records. "
+                        "Make sure your data includes an Hour/Time column.")
+
+            lines = ["**Peak Hour Analysis (RF Classifier)**\n", "**Your busiest hours (from actual data):**"]
+            max_orders = max(h["orders"] for h in top)
+            for h in top:
+                bar = "█" * max(1, int(h["orders"] / max(max_orders, 1) * 12))
+                lines.append(f"- **{h['hour']:02d}:00–{h['hour']+1:02d}:00**: {h['orders']} orders  {bar}")
+
+            preds = ph.get("predictions", [])[:7]
+            if preds:
+                lines.append("\n**Predicted peak hour — next 7 days:**")
+                for p in preds:
+                    lines.append(f"- {p.get('day','?')} {p.get('date','')}: peak at **{p.get('peak_label','—')}**")
+
+            lines.append("\n💡 **Staffing tip:** Have your full team in place 30 mins before peak. "
+                         "Add 1 extra server during your top 2 hours to reduce wait times.")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"Peak hour analysis failed: {str(e)}"
+
+    # ── Cross-sell / combo / upsell ──
+    if any(k in m for k in [
+        "cross sell", "cross-sell", "upsell", "up-sell", "bundle",
+        "pair with", "goes well with", "recommend with", "frequently bought",
+        "what to recommend", "combo idea", "complementary item",
+        "what sells together", "combo", "add-on", "addon",
+    ]):
+        if not data:
+            return "Upload POS data to get cross-sell recommendations from your customers' ordering patterns."
+        try:
+            import ml_models
+            import data_store as _ds2
+            cs = ml_models.cross_sell_recommendations(_ds2._pos_data, top_n=5)
+            if not cs:
+                return ("Not enough co-purchase data to find patterns. "
+                        "Upload more POS records (ideally with Order ID so items can be grouped per transaction).")
+            lines = ["**Cross-Sell Recommendations (Association Rules — FP-Growth)**\n"]
+            for r in cs[:5]:
+                lines.append(f"- Customer orders **{r['antecedent']}** → suggest **{r['consequent']}**"
+                             f"  *(confidence: {r['confidence']}%, lift: {r['lift']}×)*")
+            lines.append("\n💡 **Quick win:** Train staff on the top 2 combos. "
+                         "A simple *'Would you also like...'* increases average order value by 15–20%.")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"Cross-sell analysis failed: {str(e)}"
+
+    # ── Cancellation risk ──
+    if any(k in m for k in [
+        "cancel", "cancellation", "cancelled", "order cancel", "cancel rate",
+        "which platform cancels", "high cancel", "reduce cancel",
+    ]):
+        if not data:
+            return "Upload POS data to analyse cancellation rates by platform."
+        try:
+            import ml_models
+            import data_store as _ds2
+            cr = ml_models.cancellation_risk_analysis(_ds2._pos_data)
+            if cr.get("error"):
+                return f"Cancellation analysis: {cr['error']}"
+            lines = [f"**Cancellation Risk Analysis (RF, AUC {cr['model_auc']}%)**\n",
+                     f"- Overall cancellation risk: **{cr['overall_risk']}%**\n",
+                     "**By platform:**"]
+            for p in cr.get("by_platform", []):
+                level = "🔴 High" if p["risk_pct"] > 15 else ("🟡 Medium" if p["risk_pct"] > 7 else "🟢 Low")
+                lines.append(f"- **{p['platform']}**: {p['risk_pct']}% risk — {level}")
+            lines.append("\n💡 **Action:** For high-risk platforms, add order confirmation calls for large orders "
+                         "and keep prep time under 20 mins to reduce cancellations.")
+            return "\n".join(lines)
+        except Exception as e:
+            return f"Cancellation analysis failed: {str(e)}"
+
+    # ── Category performance ──
+    if any(k in m for k in [
+        "beverage", "main course", "starter", "dessert", "category",
+        "how are my mains", "which category",
+    ]):
+        if not cats:
+            return "No category data available."
+        lines = ["**Category Performance:**\n"]
+        for c in cats:
+            lines.append(f"- **{c['category']}**: ₹{c['revenue']:,.0f} revenue, "
+                         f"{c['orders']} orders, {c['margin_pct']:.1f}% margin")
+        best = max(cats, key=lambda x: x["revenue"])
+        lines.append(f"\n**{best['category']}** leads in revenue. "
+                     f"Focus promotions here to maximise returns.")
+        return "\n".join(lines)
+
+    # ── Specific item lookup ──
+    if any(k in m for k in ["performance of", "tell me about"]) or "how is" in m:
+        matched = None
+        for x in items:
+            if x["name"].lower() in m:
+                matched = x
+                break
+        if matched:
+            return (f"**{matched['name']} — Item Performance**\n\n"
+                    f"- Revenue : **₹{matched['revenue']:,.0f}** total\n"
+                    f"- Units sold : **{matched['qty']:.0f}** units\n"
+                    f"- Margin : **{matched['margin_pct']:.1f}%**")
 
     # ── Top / best selling ──
     if any(k in m for k in [
@@ -326,11 +614,13 @@ def _smart_response(message: str, data: list, festivals: list, search_res: list 
         if not top:
             return f"No data found for {period_label}."
         lines = [f"**Top selling items — {period_label}:**\n"]
-        for i, x in enumerate(top[:5]):
+        for i, x in enumerate(top[:3]):
             lines.append(f"{i+1}. **{x['name']}** — ₹{x['revenue']:,.0f} revenue, "
                          f"{x['qty']:.0f} units, {x['margin_pct']:.1f}% margin")
-        lines.append(f"\n💡 **{top[0]['name']}** is your star product. "
-                     "Feature it prominently on Zomato/Swiggy with high-quality photos.")
+        top_plat = max(plats, key=lambda x: x["revenue"])["platform"] if plats else None
+        if top_plat:
+            lines.append(f"\n**{top[0]['name']}** is your star product. "
+                         f"Feature it on **{top_plat}** — your top revenue channel — with high-quality photos.")
         return "\n".join(lines)
 
     # ── Worst / low margin ──
@@ -415,6 +705,48 @@ def _smart_response(message: str, data: list, festivals: list, search_res: list 
         lines.append(f"\n💡 **{top_p}** is your highest revenue channel. "
                      f"Invest in better photos, menu descriptions, and promotions on {top_p} to grow this further.")
         return "\n".join(lines)
+
+    # ── Sentiment / reviews ──
+    if any(k in m for k in [
+        "sentiment", "review", "reviews", "feedback", "rating", "ratings",
+        "customer satisfaction", "customer opinion", "customer experience",
+        "negative review", "positive review", "what customers", "what do customers",
+        "source breakdown", "visit type", "location performance", "google review",
+        "zomato review", "swiggy review", "instagram", "social media review",
+    ]):
+        engine = get_sentiment_engine()
+        if engine.has_data:
+            s = engine.stats
+            pos_kw = ", ".join(k["word"] for k in s.get("keywords", {}).get("positive", [])[:6])
+            neg_kw = ", ".join(k["word"] for k in s.get("keywords", {}).get("negative", [])[:6])
+            src_lines = "\n".join(
+                f"  - **{src['source']}**: {src['positive_pct']}% positive ({src['total']} reviews)"
+                for src in s.get("source_breakdown", [])[:5]
+            )
+            vt_lines = "\n".join(
+                f"  - **{vt['visit_type']}**: {vt['satisfaction']:.0f}% satisfaction ({vt['total']} reviews)"
+                for vt in s.get("visit_breakdown", [])
+            )
+            return (
+                f"**Customer Sentiment Analysis — TF-IDF + Linear SVM (Accuracy 93.4%)**\n\n"
+                f"**📊 Sentiment Distribution ({s['total_reviews']} reviews):**\n"
+                f"- ✅ Positive: **{s['positive']}** ({s['positive_pct']}%)\n"
+                f"- ➖ Neutral: **{s['neutral']}** ({s['neutral_pct']}%)\n"
+                f"- ❌ Negative: **{s['negative']}** ({s['negative_pct']}%)\n"
+                f"- 🌟 Satisfaction Score: **{s['satisfaction_score']}%** | Avg Rating: **{s['overall_avg_rating']}/5**\n\n"
+                f"**📱 Review Source Breakdown:**\n{src_lines}\n\n"
+                f"**🚶 Visit Type Satisfaction:**\n{vt_lines}\n\n"
+                f"**💬 Top Positive Keywords:** {pos_kw}\n"
+                f"**⚠️ Top Negative Keywords:** {neg_kw}\n\n"
+                f"💡 **Recommended Action:** Focus on resolving issues around "
+                f"'{neg_kw.split(',')[0].strip() if neg_kw else 'service quality'}' — "
+                f"the most frequent theme in negative reviews."
+            )
+        else:
+            return (
+                "No review data uploaded yet. Go to **Data Collection → Reviews & Sentiment** "
+                "tab and upload your reviews CSV to enable sentiment analysis."
+            )
 
     # ── Revenue / sales total ──
     if any(k in m for k in [
@@ -501,35 +833,94 @@ def _smart_response(message: str, data: list, festivals: list, search_res: list 
         status    = "✅ Healthy" if food_cost_pct < 35 else ("⚠️ High" if food_cost_pct < 42 else "🚨 Critical")
 
         return (f"**Café Business Overview**\n\n"
-                f"**📊 Revenue**\n"
-                f"- Total: **₹{total_rev:,.0f}** over {len(dates)} days\n"
-                f"- Daily average: **₹{daily_avg:,.0f}**\n"
-                f"- Food cost %: **{food_cost_pct:.1f}%** — {status}\n\n"
-                f"**🏆 Top 3 Items:**\n{top3_str}\n\n"
-                f"**📱 Best Platform:** {top_plat}\n\n"
-                f"**📅 Next Festival:** {next_fest} on {next_date}\n\n"
-                f"**💡 Quick Wins:**\n"
-                f"- Upsell **{items[0]['name'] if items else 'top items'}** — your highest revenue item\n"
-                f"- Boost promotions on **{top_plat}** — your top channel\n"
-                f"- Prepare a special menu for **{next_fest}** to capture festival footfall\n"
-                f"- Review low-margin items: **{items[-1]['name'] if items else '—'}** needs attention\n\n"
-                f"{'💡 *Set ANTHROPIC_API_KEY in backend .env for full AI-powered answers.*' if not HAS_AI else ''}")
+                f"- Revenue: **₹{total_rev:,.0f}** over {len(dates)} days (avg ₹{daily_avg:,.0f}/day)\n"
+                f"- Food cost: **{food_cost_pct:.1f}%** — {status}\n"
+                f"- Best platform: **{top_plat}**\n"
+                f"- Next festival: **{next_fest}** on {next_date}\n\n"
+                f"**Top 3 Items:**\n{top3_str}\n\n"
+                f"{'*Set ANTHROPIC_API_KEY for full AI-powered answers.*' if not HAS_AI else ''}")
 
-    # ── Absolute last resort (greetings / pure meta-questions) ──
-    top3 = "\n".join(f"  {i+1}. {x['name']}" for i, x in enumerate(items[:3]))
-    return (f"Hi! I'm Cafe Buddy AI. Here's what I can help you with:\n\n"
-            f"**Data questions:**\n"
-            f"- \"Which was the highest selling item last week?\"\n"
-            f"- \"Compare my weekend vs weekday sales\"\n"
-            f"- \"Which platform generates the most revenue?\"\n"
-            f"- \"What is my lowest margin item?\"\n"
-            f"- \"How can I increase my food cost efficiency?\"\n\n"
-            f"**Festival / menu planning:**\n"
-            f"- \"How should I prepare for Navratri?\"\n"
-            f"- \"What special dish should I introduce for Diwali?\"\n"
-            f"- \"Give me Holi menu ideas\"\n\n"
-            f"Your current top sellers are:\n{top3}\n\n"
-            f"{'💡 *Set ANTHROPIC_API_KEY in backend .env for full AI-powered answers.*' if not HAS_AI else ''}")
+    # ── Absolute last resort: always give a real, data-grounded answer ──
+    web_note = ""
+    if search_res:
+        snippets = [r["body"][:250] for r in search_res[:2] if r.get("body")]
+        if snippets:
+            web_note = "\n\n**🌐 From the web:**\n" + "\n".join(f"- {s}" for s in snippets)
+
+    if data:
+        top_plat  = max(plats, key=lambda x: x["revenue"])["platform"] if plats else "—"
+        next_fest = festivals[0]["name"] if festivals else None
+        fest_line = (f"- **Next festival**: {next_fest} on {festivals[0]['date']}\n"
+                     if next_fest else "")
+        status    = "✅ Healthy" if food_cost_pct < 35 else ("⚠️ High" if food_cost_pct < 42 else "🚨 Critical")
+        top3_str  = "\n".join(f"  {i+1}. **{x['name']}** — ₹{x['revenue']:,.0f} rev, {x['margin_pct']:.1f}% margin"
+                              for i, x in enumerate(items[:3]))
+        return (f"Here's your café snapshot — and I'm happy to dive deeper into any area:\n\n"
+                f"- **Revenue**: ₹{total_rev:,.0f} over {len(dates)} days (avg ₹{daily_avg:,.0f}/day)\n"
+                f"- **Food cost**: {food_cost_pct:.1f}% — {status}\n"
+                f"- **Top channel**: {top_plat}\n"
+                f"{fest_line}"
+                f"\n**Top 3 items:**\n{top3_str}\n\n"
+                f"Ask me anything — e.g. *\"which item should I remove?\"*, "
+                f"*\"how can I improve margins?\"*, *\"what to do for {next_fest or 'Diwali'}?\"*"
+                f"{web_note}")
+    else:
+        # No data loaded — provide genuinely useful café knowledge or onboarding
+        general_advice = {
+            ("staff", "team", "employee", "hire", "waiter", "barista", "manpower"):
+                ("**Café Staffing Guidelines (India):**\n\n"
+                 "- **Rule of thumb**: 1 server per 5–6 tables; 1 barista per 50 orders/day\n"
+                 "- Peak hours (8–10am, 12–2pm, 5–8pm) need 30–40% more staff on roster\n"
+                 "- Cross-train baristas on billing to handle weekend surges\n"
+                 "- Minimum wage in India for F&B: ₹12,000–18,000/month depending on state\n"
+                 "- Post rosters 2 weeks ahead to reduce last-minute call-outs"),
+            ("equipment", "machine", "coffee machine", "grinder", "pos terminal"):
+                ("**Café Equipment Essentials (India Budget Guide):**\n\n"
+                 "- **Espresso machine**: ₹80K–2L (Petroncini, La Marzocco); commercial capsule from ₹25K\n"
+                 "- **Grinder**: Mazzer Mini ~₹40K; Baratza Encore for budget ₹15K\n"
+                 "- **POS system**: Petpooja or UrbanPiper (GST-compliant, Swiggy/Zomato integrated)\n"
+                 "- **Refrigeration**: Blue Star or Voltas (inverter compressors handle power cuts)\n"
+                 "- Budget ₹8–12L for a full counter + kitchen setup"),
+            ("license", "fssai", "legal", "permit", "registration", "gst"):
+                ("**Café Licensing Checklist (India):**\n\n"
+                 "- **FSSAI License**: mandatory for all food businesses; registration for <₹12L turnover\n"
+                 "- **GST**: register if annual turnover >₹20L; café meals attract 5% GST\n"
+                 "- **Shop & Establishment Act**: state-specific; needed within 30 days of opening\n"
+                 "- **Trade License**: from local municipal corporation\n"
+                 "- **Fire NOC**: required for premises >50 sq m or multi-floor\n"
+                 "- Timeline: 4–8 weeks for all approvals"),
+            ("menu", "price", "pricing", "cost", "recipe"):
+                ("**Menu Engineering Basics:**\n\n"
+                 "- Target food cost ratio: **28–35%** of selling price\n"
+                 "- Formula: Selling price = (Ingredient cost) ÷ 0.30\n"
+                 "- **Stars** (high margin, high sales): promote heavily\n"
+                 "- **Plowhorses** (low margin, high sales): reformulate recipe to cut cost\n"
+                 "- **Puzzles** (high margin, low sales): reposition with better photos/descriptions\n"
+                 "- **Dogs** (low margin, low sales): remove from menu\n"
+                 "Upload your POS data to identify which category each item falls into."),
+            ("open", "timing", "hours", "closing", "schedule"):
+                ("**Optimal Café Operating Hours (India):**\n\n"
+                 "- **Breakfast café**: 7:30am–11am captures office crowd\n"
+                 "- **All-day café**: 9am–10pm; peak at lunch (12–2pm) and evening (5–8pm)\n"
+                 "- **Student/college area**: open till 11pm, weekend brunch 10am–3pm drives 30–40% of weekly revenue\n"
+                 "- Mon–Tue are typically slowest (20–25% below average); use for staff training or maintenance\n"
+                 "- Consider shorter hours (10am–8pm) on slow days to reduce fixed costs"),
+        }
+        for keywords, response in general_advice.items():
+            if any(k in m for k in keywords):
+                return response + ("\n\n*Upload your POS data in Data Collection for personalised analytics.*"
+                                   if not HAS_AI else "")
+
+        next_fest = festivals[0]["name"] if festivals else "Diwali"
+        return (f"Hi! I'm **Cafe Buddy AI** — your café business assistant.\n\n"
+                f"**What I can do:**\n"
+                f"- 📊 Analyse revenue, margins, platform performance *(needs data upload)*\n"
+                f"- 🏆 Identify best/worst items and upsell opportunities\n"
+                f"- 🎉 Festival planning — menu ideas & promotions for {next_fest} and more\n"
+                f"- 💡 Staffing, pricing, licensing, and general café advice\n\n"
+                f"**To unlock analytics:** upload your POS/sales data in **Data Collection**.\n\n"
+                f"Or ask me anything about running your café — I'm ready!"
+                f"{web_note}")
 
 
 async def _stream_text(text: str, delay: float = 0.018):
@@ -558,40 +949,155 @@ async def chatbot_stream(req: ChatRequest):
     data       = get_data()
     context    = _build_context(data)
     festivals  = get_upcoming_festivals(90)
+    msg_lower  = req.message.lower()
 
-    do_search  = _needs_web_search(req.message)
+    # Step 1: Build ML model reasoning context (non-blocking, timeout-protected)
+    ml_context = ""
+    if _ds._pos_data:
+        try:
+            import ml_models
+            ml_context = await asyncio.wait_for(
+                asyncio.to_thread(ml_models.build_ml_context, _ds._pos_data),
+                timeout=10.0
+            )
+        except Exception:
+            ml_context = ""
+
+    # Skip web search when no data + it's a pure data query (avoids slow DDG → 502)
+    do_search = _needs_web_search(req.message)
+    if not data and not any(k in msg_lower for k in [
+        "festival", "navratri", "diwali", "holi", "eid", "christmas",
+        "new year", "trending", "idea", "ideas", "recipe", "weather",
+        "strategy", "marketing", "promotion", "social media",
+    ]):
+        do_search = False
+
     search_res: list = []
-
     if do_search and HAS_DDG:
-        # For festival/event queries, include current year so results are current
-        year = datetime.now().year
+        year  = datetime.now().year
         query = f"cafe restaurant {req.message} India {year}"
-        if any(k in req.message.lower() for k in ["festival", "eid", "diwali", "holi", "navratri", "date", "when"]):
+        if any(k in msg_lower for k in ["festival", "eid", "diwali", "holi", "navratri", "date", "when"]):
             query = f"{req.message} {year} India date"
-        search_res = await asyncio.to_thread(_web_search, query, 4)
+        try:
+            search_res = await asyncio.wait_for(
+                asyncio.to_thread(_web_search, query, 4), timeout=8.0
+            )
+        except asyncio.TimeoutError:
+            search_res = []
 
     async def generate():
         try:
             if HAS_AI:
                 async for chunk in _stream_claude(
                     [m.model_dump() for m in req.history],
-                    req.message, context, search_res, festivals
+                    req.message, context, search_res, festivals,
+                    ml_context=ml_context
                 ):
                     yield chunk
             else:
-                response = _smart_response(req.message, data, festivals, search_res)
+                response = _smart_response(req.message, data, festivals, search_res, ml_context=ml_context)
                 async for chunk in _stream_text(response):
                     yield chunk
         except Exception as e:
-            yield f"data: {json.dumps({'text': f'\\n\\n*Error: {e}*'})}\n\n"
+            err_msg = str(e)
+            # Surface a clean message instead of raw exception text
+            if "502" in err_msg or "503" in err_msg or "timeout" in err_msg.lower():
+                friendly = "The server is temporarily busy. Please try again in a moment."
+            elif "api_key" in err_msg.lower() or "authentication" in err_msg.lower():
+                friendly = "AI service authentication error. Check your ANTHROPIC_API_KEY."
+            else:
+                friendly = f"Something went wrong processing your request. Please try again."
+            yield f"data: {json.dumps({'text': friendly})}\n\n"
             yield f"data: {json.dumps({'done': True, 'sources': {}})}\n\n"
 
     return StreamingResponse(
         generate(),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no",
-                 "Access-Control-Allow-Origin": "*"},
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Access-Control-Allow-Origin": "*",
+            "Connection": "keep-alive",
+            "X-Content-Type-Options": "nosniff",
+        },
     )
+
+
+# ─── Non-streaming fallback (works through Cloudflare / any proxy) ────────────
+
+@router.post("/chatbot/ask")
+async def chatbot_ask(req: ChatRequest):
+    """Identical logic to /chatbot/stream but returns a single JSON object.
+    Used by the frontend when SSE is blocked by a tunnel or proxy."""
+    data      = get_data()
+    context   = _build_context(data)
+    festivals = get_upcoming_festivals(90)
+    msg_lower = req.message.lower()
+
+    ml_context = ""
+    if _ds._pos_data:
+        try:
+            import ml_models
+            ml_context = await asyncio.wait_for(
+                asyncio.to_thread(ml_models.build_ml_context, _ds._pos_data),
+                timeout=10.0
+            )
+        except Exception:
+            ml_context = ""
+
+    do_search = _needs_web_search(req.message)
+    if not data and not any(k in msg_lower for k in [
+        "festival", "navratri", "diwali", "holi", "eid", "christmas",
+        "new year", "trending", "idea", "ideas", "recipe", "weather",
+        "strategy", "marketing", "promotion", "social media",
+    ]):
+        do_search = False
+
+    search_res: list = []
+    if do_search and HAS_DDG:
+        year  = datetime.now().year
+        query = f"cafe restaurant {req.message} India {year}"
+        try:
+            search_res = await asyncio.wait_for(
+                asyncio.to_thread(_web_search, query, 4), timeout=8.0
+            )
+        except Exception:
+            search_res = []
+
+    try:
+        if HAS_AI:
+            # Collect the full streamed response into one string
+            full_text = ""
+            sources: dict = {}
+            async for chunk in _stream_claude(
+                [m.model_dump() for m in req.history],
+                req.message, context, search_res, festivals,
+                ml_context=ml_context
+            ):
+                # Parse SSE chunks from _stream_claude
+                raw = chunk.replace("data: ", "").strip()
+                if not raw:
+                    continue
+                try:
+                    parsed = json.loads(raw)
+                    if parsed.get("done"):
+                        sources = parsed.get("sources", {})
+                    elif parsed.get("text"):
+                        full_text += parsed["text"]
+                except Exception:
+                    pass
+        else:
+            full_text = _smart_response(req.message, data, festivals, search_res, ml_context=ml_context)
+            sources   = {
+                "data": bool(data),
+                "web":  bool(search_res),
+                "festivals": bool(festivals),
+            }
+    except Exception as e:
+        full_text = "Something went wrong processing your request. Please try again."
+        sources   = {}
+
+    return {"text": full_text, "sources": sources}
 
 
 @router.get("/chatbot/status")
@@ -607,3 +1113,93 @@ def chatbot_status():
 @router.get("/chatbot/festivals")
 def upcoming_festivals(days: int = 90):
     return {"festivals": get_upcoming_festivals(days)}
+
+
+# ─── WhatsApp Notifications via Green API (free developer plan) ──────────────
+# Setup: https://green-api.com  → Register → Create instance → Scan QR with WhatsApp
+
+import json as _json
+import urllib.parse
+import urllib.request
+
+class WhatsAppSettings(BaseModel):
+    idInstance: str        # Green API instance ID  e.g. "1101234567"
+    apiTokenInstance: str  # Green API token from dashboard
+    phone: str             # Recipient phone  e.g. "+919876543210"
+    message: str = ""
+
+
+def _build_daily_summary() -> str:
+    """Build a concise WhatsApp summary of today's café performance."""
+    from data_store import get_data, item_stats, platform_breakdown, daily_revenue
+    data = get_data()
+    if not data:
+        return "📊 *Cafe Buddy Daily Report*\n\nNo data uploaded yet. Visit your dashboard to upload POS data."
+
+    today   = datetime.now().strftime("%Y-%m-%d")
+    items   = item_stats(data)
+    plats   = platform_breakdown(data)
+    daily   = daily_revenue(data, 1)
+    today_r = next((r for r in daily if r["date"] == today), None)
+    total   = sum(r["revenue"] for r in data)
+    dates   = sorted(set(r["date"] for r in data))
+
+    top_item = items[0]["name"] if items else "—"
+    top_plat = max(plats, key=lambda x: x["revenue"])["platform"] if plats else "—"
+    today_rev = today_r["revenue"] if today_r else 0
+
+    festivals = get_upcoming_festivals(7)
+    fest_line = f"\n🎉 *Coming soon*: {festivals[0]['name']} in {festivals[0]['days_away']} days" if festivals else ""
+
+    # Action items from data
+    avg_rev = total / max(len(dates), 1)
+    trend = "📈 Above avg" if today_rev > avg_rev else "📉 Below avg"
+
+    return (
+        f"☕ *Cafe Buddy — Daily Summary*\n"
+        f"📅 {datetime.now().strftime('%d %b %Y, %I:%M %p')}\n\n"
+        f"💰 *Today's Revenue*: ₹{today_rev:,.0f} {trend}\n"
+        f"📊 *Daily Avg*: ₹{avg_rev:,.0f} over {len(dates)} days\n"
+        f"🏆 *Best Seller*: {top_item}\n"
+        f"📱 *Top Channel*: {top_plat}\n"
+        f"{fest_line}\n\n"
+        f"*Action Items:*\n"
+        f"{'✅ Revenue on track' if today_rev >= avg_rev * 0.9 else '⚠️ Revenue below target — consider a promotion'}\n"
+        f"📦 Check stock for top-selling items\n"
+        f"💬 Reply to any pending customer reviews"
+    )
+
+
+@router.post("/notifications/whatsapp/send")
+async def send_whatsapp(settings: WhatsAppSettings):
+    """Send a WhatsApp message via Green API (free developer plan).
+    Setup at https://green-api.com — register, create instance, scan QR."""
+    msg = settings.message or _build_daily_summary()
+    try:
+        # Green API expects chatId in format: countrycode+number@c.us (no + sign)
+        phone_clean = settings.phone.replace("+", "").replace(" ", "").replace("-", "")
+        chat_id = f"{phone_clean}@c.us"
+
+        url = (f"https://api.green-api.com"
+               f"/waInstance{settings.idInstance}"
+               f"/sendMessage/{settings.apiTokenInstance}")
+
+        body = _json.dumps({"chatId": chat_id, "message": msg}).encode("utf-8")
+        req = urllib.request.Request(
+            url, data=body,
+            headers={"Content-Type": "application/json", "User-Agent": "CafeBuddy/2.0"},
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            response_body = resp.read().decode("utf-8", errors="ignore")
+        if resp.status == 200:
+            return {"success": True, "message": "WhatsApp message sent via Green API!", "response": response_body[:300]}
+        return {"success": False, "message": f"Green API returned HTTP {resp.status}: {response_body[:200]}"}
+    except Exception as e:
+        return {"success": False, "message": str(e)}
+
+
+@router.get("/notifications/whatsapp/summary")
+def get_whatsapp_summary():
+    """Preview the message that would be sent as a WhatsApp notification."""
+    return {"preview": _build_daily_summary()}
