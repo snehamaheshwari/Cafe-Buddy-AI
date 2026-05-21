@@ -259,7 +259,7 @@ _SYSTEM_PROMPT = """You are Cafe Buddy AI — a sharp, data-driven assistant for
 ## Sources you have access to:
 1. ML MODEL REASONING — trained Random Forest, Ridge Regression, and classification models run on live POS data
 2. Real café sales analytics (CONTEXT block)
-3. Customer review sentiment — TF-IDF + Linear SVM model (in CONTEXT when available)
+3. Customer review sentiment — Pre-trained Logistic Regression + TF-IDF model with aspect analysis (Food, Service, Ambiance, Price, Wait Time), NPS, confidence scores (in CONTEXT when available)
 4. Upcoming Indian festivals with menu and promo ideas (FESTIVALS block)
 5. Live web search results (WEB SEARCH block)
 
@@ -713,40 +713,112 @@ def _smart_response(message: str, data: list, festivals: list, search_res: list 
         "negative review", "positive review", "what customers", "what do customers",
         "source breakdown", "visit type", "location performance", "google review",
         "zomato review", "swiggy review", "instagram", "social media review",
+        "nps", "net promoter", "aspect", "ambiance", "service quality", "customer feeling",
     ]):
         engine = get_sentiment_engine()
-        if engine.has_data:
-            s = engine.stats
-            pos_kw = ", ".join(k["word"] for k in s.get("keywords", {}).get("positive", [])[:6])
-            neg_kw = ", ".join(k["word"] for k in s.get("keywords", {}).get("negative", [])[:6])
-            src_lines = "\n".join(
-                f"  - **{src['source']}**: {src['positive_pct']}% positive ({src['total']} reviews)"
-                for src in s.get("source_breakdown", [])[:5]
-            )
-            vt_lines = "\n".join(
-                f"  - **{vt['visit_type']}**: {vt['satisfaction']:.0f}% satisfaction ({vt['total']} reviews)"
-                for vt in s.get("visit_breakdown", [])
-            )
+        if not engine.has_data:
             return (
-                f"**Customer Sentiment Analysis — TF-IDF + Linear SVM (Accuracy 93.4%)**\n\n"
-                f"**📊 Sentiment Distribution ({s['total_reviews']} reviews):**\n"
-                f"- ✅ Positive: **{s['positive']}** ({s['positive_pct']}%)\n"
-                f"- ➖ Neutral: **{s['neutral']}** ({s['neutral_pct']}%)\n"
-                f"- ❌ Negative: **{s['negative']}** ({s['negative_pct']}%)\n"
-                f"- 🌟 Satisfaction Score: **{s['satisfaction_score']}%** | Avg Rating: **{s['overall_avg_rating']}/5**\n\n"
-                f"**📱 Review Source Breakdown:**\n{src_lines}\n\n"
-                f"**🚶 Visit Type Satisfaction:**\n{vt_lines}\n\n"
-                f"**💬 Top Positive Keywords:** {pos_kw}\n"
-                f"**⚠️ Top Negative Keywords:** {neg_kw}\n\n"
-                f"💡 **Recommended Action:** Focus on resolving issues around "
-                f"'{neg_kw.split(',')[0].strip() if neg_kw else 'service quality'}' — "
-                f"the most frequent theme in negative reviews."
+                "No review data uploaded yet. Go to **Upload My Data → Customer Reviews** "
+                "tab and upload your reviews file to enable sentiment analysis.\n\n"
+                "Once uploaded, I can tell you: which platforms get the most complaints, "
+                "what customers love most, your NPS score, aspect-level ratings (food, service, "
+                "ambiance, wait time, price), and specific actions to improve satisfaction."
             )
-        else:
-            return (
-                "No review data uploaded yet. Go to **Data Collection → Reviews & Sentiment** "
-                "tab and upload your reviews CSV to enable sentiment analysis."
-            )
+
+        s = engine.stats
+
+        # ── Core numbers ──────────────────────────────────────────────────────
+        total     = s["total_reviews"]
+        pos_pct   = s["positive_pct"]
+        neg_pct   = s["negative_pct"]
+        neu_pct   = s["neutral_pct"]
+        sat       = s["satisfaction_score"]
+        avg_r     = s["overall_avg_rating"]
+        nps       = s.get("nps", "N/A")
+        conf      = s.get("avg_model_confidence", "?")
+
+        # ── Aspect analysis — pick worst and best ─────────────────────────────
+        aspects   = [a for a in s.get("aspect_analysis", []) if a["total"] > 0]
+        worst_asp = aspects[:2] if aspects else []   # sorted worst-first
+        best_asp  = sorted(aspects, key=lambda x: -x["score"])[:1]
+
+        asp_lines = ""
+        for a in aspects:
+            bar = "🔴" if a["score"] < 40 else "🟡" if a["score"] < 65 else "🟢"
+            asp_lines += f"\n  {bar} **{a['aspect']}** — {a['score']}% satisfaction ({a['positive_pct']}% positive, {a['negative_pct']}% negative, {a['total']} mentions)"
+
+        # ── Source breakdown ───────────────────────────────────────────────────
+        src_lines = "\n".join(
+            f"  - **{src['source']}**: {src['positive_pct']}% positive, {src['negative_pct']}% negative ({src['total']} reviews)"
+            for src in s.get("source_breakdown", [])[:5]
+        )
+
+        # ── Visit type ────────────────────────────────────────────────────────
+        vt_lines = "\n".join(
+            f"  - **{vt['visit_type']}**: {vt['satisfaction']:.0f}% satisfaction ({vt['total']} reviews)"
+            for vt in s.get("visit_breakdown", [])
+        )
+
+        # ── Keywords ──────────────────────────────────────────────────────────
+        pos_kw = ", ".join(k["word"] for k in s.get("keywords", {}).get("positive", [])[:8])
+        neg_kw = ", ".join(k["word"] for k in s.get("keywords", {}).get("negative", [])[:8])
+
+        # ── Actionable insights from model ────────────────────────────────────
+        insights = s.get("actionable_insights", [])
+        insight_lines = ""
+        for ins in insights[:4]:
+            icon = "🚨" if ins["priority"] == "high" else "💡"
+            insight_lines += f"\n{icon} **{ins['title']}**\n   → {ins['detail']}\n"
+
+        # ── Trend snippet ──────────────────────────────────────────────────────
+        trend = s.get("sentiment_trend", [])
+        trend_note = ""
+        if len(trend) >= 2:
+            first_pos = trend[0]["positive_pct"]
+            last_pos  = trend[-1]["positive_pct"]
+            delta     = last_pos - first_pos
+            if abs(delta) >= 5:
+                direction = "📈 improving" if delta > 0 else "📉 declining"
+                trend_note = (f"\n\n**📅 Sentiment Trend:** Positive reviews went from "
+                              f"{first_pos}% ({trend[0]['month']}) → {last_pos}% ({trend[-1]['month']}) "
+                              f"— {direction} by {abs(delta):.1f} percentage points.")
+
+        # ── NPS interpretation ─────────────────────────────────────────────────
+        nps_note = ""
+        if isinstance(nps, (int, float)):
+            if nps >= 50:
+                nps_note = f"**Excellent** — customers actively recommend you"
+            elif nps >= 20:
+                nps_note = f"**Good** — more promoters than detractors"
+            elif nps >= 0:
+                nps_note = f"**Average** — needs improvement"
+            else:
+                nps_note = f"**Needs urgent attention** — detractors outnumber promoters"
+
+        # ── Best / worst aspect callout ────────────────────────────────────────
+        callout = ""
+        if worst_asp and worst_asp[0]["status"] in ("critical", "needs improvement"):
+            callout += (f"\n\n⚠️ **Biggest pain point: {worst_asp[0]['aspect']}** "
+                        f"— {worst_asp[0]['negative_pct']}% of mentions are negative. "
+                        f"This is your #1 priority to fix.")
+        if best_asp and best_asp[0]["score"] >= 70:
+            callout += (f"\n\n✨ **Strongest area: {best_asp[0]['aspect']}** "
+                        f"— {best_asp[0]['positive_pct']}% positive. Feature this in your marketing.")
+
+        return (
+            f"**Customer Sentiment Analysis** *(Pre-trained Logistic Regression + TF-IDF | avg confidence: {conf}%)*\n\n"
+            f"**📊 Overall ({total} reviews analysed):**\n"
+            f"- ✅ Positive: **{s['positive']}** ({pos_pct}%)  ➖ Neutral: **{s['neutral']}** ({neu_pct}%)  ❌ Negative: **{s['negative']}** ({neg_pct}%)\n"
+            f"- 🌟 Satisfaction Score: **{sat}%** | ⭐ Avg Rating: **{avg_r}/5** | 📣 NPS: **{nps}** ({nps_note})\n\n"
+            f"**🔍 Aspect-Level Breakdown (what customers talk about):**{asp_lines}\n"
+            f"{callout}\n\n"
+            f"**📱 By Platform:**\n{src_lines}\n\n"
+            f"**🚶 By Visit Type:**\n{vt_lines}\n\n"
+            f"**💬 What customers love:** {pos_kw}\n"
+            f"**⚠️ What customers complain about:** {neg_kw}\n"
+            f"{trend_note}\n\n"
+            f"**🎯 Model-Generated Action Plan:**\n{insight_lines}"
+        )
 
     # ── Revenue / sales total ──
     if any(k in m for k in [

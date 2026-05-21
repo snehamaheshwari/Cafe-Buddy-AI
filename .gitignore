@@ -16,8 +16,25 @@ frontend/dist/
 
 # Uploaded / generated data — private, not for version control
 backend/data/
-backend/models/
 backend/*.pkl
+
+# Large auto-generated ML model files (regenerated from training data)
+backend/models/random_forest.pkl
+backend/models/xgboost.pkl
+backend/models/xgboost.json
+backend/models/lstm.keras
+backend/models/lstm_scaler.pkl
+backend/models/lstm_config.json
+backend/models/platform_forecasters.pkl
+backend/models/peak_hour_classifier.pkl
+backend/models/cancellation_classifier.pkl
+backend/models/cross_sell_rules.pkl
+backend/models/dynamic_pricing.pkl
+backend/models/linear_regression.pkl
+backend/models/prophet_model_metadata.pkl
+
+# Sentiment models are committed — they are pre-trained by the team
+# (backend/models/sentiment_model.pkl, tfidf_vectorizer.pkl, label_encoder.pkl)
 
 # Logs & tunnel artefacts
 *.log
