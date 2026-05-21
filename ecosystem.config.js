@@ -19,10 +19,12 @@ module.exports = {
       script: './scripts/start-tunnel.js',
       cwd: 'C:/Users/HP/cafe-buddy',
       watch: false,
+      // The tunnel script manages its own reconnect loop internally.
+      // PM2 only restarts if the node process itself crashes (rare).
       autorestart: true,
-      restart_delay: 4000,         // wait 4s so loca.lt releases the subdomain
+      restart_delay: 15000,        // 15s so loca.lt fully releases the subdomain
       max_restarts: 999,
-      exp_backoff_restart_delay: 200,
+      exp_backoff_restart_delay: 1000,
       log_file: 'C:/Users/HP/cafe-buddy/logs/tunnel.log',
       error_file: 'C:/Users/HP/cafe-buddy/logs/tunnel-err.log',
       merge_logs: true,
