@@ -1,100 +1,60 @@
-// Cloudflare Quick Tunnel — no account needed, port-443-only, rock-solid.
-// Much more reliable than localtunnel (which used random high ports that
-// firewalls/ISPs block). Cloudflare only needs outbound port 443.
-//
-// The URL is a random *.trycloudflare.com subdomain that stays fixed for
-// the lifetime of this process. On restart it gets a new URL — the log
-// clearly prints it so teammates always know the current address.
-//
-// For a PERMANENT fixed URL: sign up free at ngrok.com, get a static domain,
-// add authtoken, then switch the script to use ngrok.
+/**
+ * Tunnel keeper — cafebuddy-ai.loca.lt
+ *
+ * Windows fix: uses `taskkill /F /T /PID` to kill the ENTIRE process tree
+ * (cmd.exe → lt node.exe) when PM2 stops/restarts this wrapper. Without
+ * this, the inner lt process survives and holds the subdomain, causing the
+ * next launch to get a random subdomain instead of cafebuddy-ai.
+ */
 
-const { spawn } = require('child_process')
-const path      = require('path')
+const { spawn, execSync } = require('child_process')
 
-const PORT          = 8000
-const CLOUDFLARED   = path.join(__dirname, '..', 'cloudflared.exe')
+const LT_CMD = 'C:/Users/HP/AppData/Roaming/npm/lt.cmd'
+const PORT   = 8000
+const SUB    = 'cafebuddy-ai'
 
-let proc        = null
-let retryDelay  = 5000
-let retryTimer  = null
-let isStarting  = false
+function ts() { return new Date().toISOString().replace('T',' ').slice(0,19) }
+function log(m) { console.log(`[${ts()}] [tunnel] ${m}`) }
 
-function log(msg) {
-  const ts = new Date().toISOString().replace('T', ' ').slice(0, 19)
-  console.log(`[${ts}] [tunnel] ${msg}`)
+// Kill any lingering lt processes from previous runs before claiming subdomain
+function killAllLt() {
+  try {
+    execSync('taskkill /F /FI "WINDOWTITLE eq lt*" /T 2>nul', { shell: true })
+  } catch (_) {}
+  try {
+    execSync('taskkill /F /FI "IMAGENAME eq lt.exe" /T 2>nul', { shell: true })
+  } catch (_) {}
 }
 
-function scheduleReconnect(reason) {
-  if (retryTimer || isStarting) return
-  log(`${reason} — reconnecting in ${retryDelay / 1000}s`)
-  retryTimer = setTimeout(() => { retryTimer = null; start() }, retryDelay)
-  retryDelay = Math.min(retryDelay * 2, 60000)
+killAllLt()
+log(`connecting → https://${SUB}.loca.lt`)
+
+const lt = spawn(LT_CMD, ['--port', String(PORT), '--subdomain', SUB], {
+  stdio: ['ignore', 'pipe', 'pipe'],
+  shell: true,
+  windowsHide: true,
+  detached: false,
+})
+
+const ltPid = lt.pid
+
+lt.stdout.on('data', d => { const s = d.toString().trim(); if(s) log(s) })
+lt.stderr.on('data', d => { const s = d.toString().trim(); if(s) log(s) })
+
+lt.on('error', err => log(`error: ${err.message}`))
+
+lt.on('exit', (code, signal) => {
+  log(`lt exited (code=${code} signal=${signal}) — PM2 restarts in 10s`)
+  process.exit(1)
+})
+
+// SIGTERM from PM2: kill entire process tree, then exit
+function shutdown(sig) {
+  log(`received ${sig} — killing lt process tree (pid ${ltPid})`)
+  try {
+    execSync(`taskkill /F /T /PID ${ltPid} 2>nul`, { shell: true })
+  } catch (_) {}
+  setTimeout(() => process.exit(0), 300)
 }
-
-function start() {
-  if (isStarting) return
-  isStarting = true
-
-  log(`starting Cloudflare tunnel → localhost:${PORT}`)
-
-  proc = spawn(CLOUDFLARED, [
-    'tunnel', '--url', `http://localhost:${PORT}`,
-    '--no-autoupdate',
-  ], { stdio: ['ignore', 'pipe', 'pipe'] })
-
-  let urlFound = false
-
-  function parseLine(line) {
-    // cloudflared prints the URL to stderr in a line like:
-    //   https://xxxx-xxxx.trycloudflare.com
-    const match = line.match(/https:\/\/[a-z0-9\-]+\.trycloudflare\.com/)
-    if (match && !urlFound) {
-      urlFound = true
-      retryDelay = 5000   // reset backoff
-      log(`\n  ┌─────────────────────────────────────────────────────┐`)
-      log(`  │  🌐 PUBLIC URL: ${match[0].padEnd(35)} │`)
-      log(`  │  Share this link with your team!                    │`)
-      log(`  └─────────────────────────────────────────────────────┘`)
-    }
-    if (line.includes('ERR') || line.includes('error')) {
-      log(`cloudflare: ${line.trim()}`)
-    }
-  }
-
-  proc.stdout.on('data', d => d.toString().split('\n').filter(Boolean).forEach(parseLine))
-  proc.stderr.on('data', d => d.toString().split('\n').filter(Boolean).forEach(parseLine))
-
-  proc.on('spawn', () => {
-    isStarting = false
-    log('cloudflared process started — waiting for URL…')
-  })
-
-  proc.on('error', (err) => {
-    isStarting = false
-    proc = null
-    log(`failed to start: ${err.message}`)
-    scheduleReconnect('spawn error')
-  })
-
-  proc.on('exit', (code, signal) => {
-    isStarting = false
-    proc = null
-    log(`exited (code=${code} signal=${signal})`)
-    scheduleReconnect('process exited')
-  })
-}
-
-function shutdown() {
-  if (retryTimer) clearTimeout(retryTimer)
-  if (proc) proc.kill()
-  process.exit(0)
-}
-process.on('SIGINT',  shutdown)
-process.on('SIGTERM', shutdown)
-
-// Start after backend has had time to boot
-setTimeout(start, 3000)
-
-// Keep the process alive
-setInterval(() => {}, 1 << 30)
+process.on('SIGTERM', () => shutdown('SIGTERM'))
+process.on('SIGINT',  () => shutdown('SIGINT'))
