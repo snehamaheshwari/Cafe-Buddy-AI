@@ -479,7 +479,11 @@ def _smart_response(message: str, data: list, festivals: list, search_res: list 
         "when to staff", "staffing hours",
     ]):
         if not data:
-            return "Upload POS data with order times to get peak-hour analysis."
+            return (
+                "Upload POS data (with order timestamps) to unlock peak-hour analysis. "
+                "Once uploaded, I can identify your busiest hours, forecast daily demand, "
+                "and recommend optimal staffing schedules for each shift."
+            )
         try:
             import ml_models
             import data_store as _ds2

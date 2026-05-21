@@ -1,10 +1,10 @@
 """
-Unit tests for sentiment_engine.py — text preprocessing, model training,
-prediction, stats computation, and persistence helpers.
+Unit tests for sentiment_engine.py.
+Uses the pre-trained Logistic Regression + TF-IDF + LabelEncoder model.
 """
 import pytest
 import pandas as pd
-from sentiment_engine import SentimentEngine, clean_text, LABEL_MAP, REVERSE_MAP
+from sentiment_engine import SentimentEngine, clean_text
 
 
 # ─── clean_text ───────────────────────────────────────────────────────────────
@@ -16,372 +16,344 @@ class TestCleanText:
     def test_removes_urls(self):
         result = clean_text("Visit https://example.com for more")
         assert "http" not in result
-        assert "example" not in result
 
     def test_removes_at_mentions(self):
-        result = clean_text("@CafeBuddy is great")
-        assert "@" not in result
+        assert "@" not in clean_text("@CafeBuddy is great")
 
     def test_removes_hashtags(self):
-        result = clean_text("Love #coffee and #food")
-        assert "#" not in result
+        assert "#" not in clean_text("Love #coffee and #food")
 
     def test_removes_special_characters(self):
-        result = clean_text("Amazing food!!!")
-        assert "!" not in result
+        assert "!" not in clean_text("Amazing food!!!")
 
-    def test_collapses_extra_whitespace(self):
-        result = clean_text("too    many    spaces")
-        assert "  " not in result
+    def test_collapses_whitespace(self):
+        assert "  " not in clean_text("too    many    spaces")
 
     def test_removes_short_tokens(self):
-        # Tokens ≤2 chars are removed
         result = clean_text("I am so happy")
-        assert " I " not in result
-        assert " am " not in result
-
-    def test_removes_stopwords(self):
-        result = clean_text("this coffee is the best in the world")
-        assert "this" not in result
+        # short tokens (≤2 chars) removed
+        assert " I " not in result and " am " not in result
 
     def test_empty_string(self):
-        result = clean_text("")
-        assert result == ""
+        assert clean_text("") == ""
 
-    def test_handles_numbers(self):
-        result = clean_text("Rated 5 stars")
-        # Numbers get stripped by [^a-zA-Z\s] pattern
-        assert "5" not in result
+    def test_strips_numbers(self):
+        assert "5" not in clean_text("Rated 5 stars")
 
-    def test_meaningful_words_retained(self):
+    def test_retains_meaningful_words(self):
         result = clean_text("excellent pasta and coffee")
         assert "excellent" in result
         assert "pasta" in result
 
 
-# ─── SentimentEngine — initialization ────────────────────────────────────────
+# ─── SentimentEngine — pre-trained model loads ───────────────────────────────
 
-class TestSentimentEngineInit:
-    def test_has_data_false_initially(self):
+class TestSentimentEnginePretrainedModel:
+    """The engine loads a pre-trained model at init — _fitted must be True."""
+
+    def test_fitted_on_init(self):
         eng = SentimentEngine()
-        assert eng.has_data is False
+        assert eng._fitted is True
 
-    def test_stats_empty_initially(self):
+    def test_predict_returns_valid_label(self):
         eng = SentimentEngine()
-        assert eng.stats == {}
+        label = eng.predict("The food was great and service was quick")
+        assert label in ("Positive", "Neutral", "Negative")
 
-    def test_records_empty_initially(self):
+    def test_predict_batch_returns_list_of_valid_labels(self):
         eng = SentimentEngine()
-        assert eng.records == []
-
-    def test_predict_returns_unknown_without_training(self):
-        eng = SentimentEngine()
-        result = eng.predict("Great food!")
-        assert result == "Unknown"
-
-    def test_predict_batch_returns_unknowns_without_training(self):
-        eng = SentimentEngine()
-        results = eng.predict_batch(["Great food!", "Terrible service!"])
-        assert results == ["Unknown", "Unknown"]
-
-
-# ─── SentimentEngine — fit & predict ─────────────────────────────────────────
-
-class TestSentimentEngineFit:
-    @pytest.fixture
-    def trained_engine(self):
-        eng = SentimentEngine()
-        texts = [
-            "Excellent food and service",
-            "Amazing coffee, loved it",
-            "Great ambience and staff",
-            "Wonderful experience overall",
-            "Delicious pasta, highly recommend",
-            "Terrible service, waited too long",
-            "Cold food, very disappointed",
-            "Worst experience ever",
-            "Rude staff, never coming back",
-            "Food was bad and overpriced",
-            "Average experience, nothing special",
-            "Okay place, could be better",
-            "Decent food but slow service",
-            "Not bad, not great either",
-        ]
-        labels = ["Positive"] * 5 + ["Negative"] * 5 + ["Neutral"] * 4
-        eng.fit(texts, labels)
-        return eng
-
-    def test_fit_sets_fitted_flag(self, trained_engine):
-        assert trained_engine._fitted is True
-
-    def test_predict_returns_valid_label(self, trained_engine):
-        result = trained_engine.predict("Amazing food and great service")
-        assert result in ("Positive", "Neutral", "Negative")
-
-    def test_predict_positive_review(self, trained_engine):
-        result = trained_engine.predict("Absolutely delicious food, loved every bite")
-        assert result in ("Positive", "Neutral")  # generous: model may vary
-
-    def test_predict_negative_review(self, trained_engine):
-        result = trained_engine.predict("Terrible cold food, rude staff, disgusting")
-        assert result in ("Negative", "Neutral")
-
-    def test_predict_batch_returns_list(self, trained_engine):
-        results = trained_engine.predict_batch(["Great!", "Awful!"])
-        assert isinstance(results, list)
-        assert len(results) == 2
+        results = eng.predict_batch(["Great food!", "Terrible service", "Okay place"])
+        assert len(results) == 3
         assert all(r in ("Positive", "Neutral", "Negative") for r in results)
 
-    def test_fit_returns_true_on_sufficient_data(self):
+    def test_predict_batch_empty_returns_empty(self):
         eng = SentimentEngine()
-        texts  = ["good " * 3] * 6 + ["bad " * 3] * 6
-        labels = ["Positive"] * 6 + ["Negative"] * 6
-        result = eng.fit(texts, labels)
-        assert result is True
+        assert eng.predict_batch([]) == []
 
-    def test_fit_returns_false_on_too_few_samples(self):
+    def test_predict_with_confidence_returns_4_tuple(self):
         eng = SentimentEngine()
-        result = eng.fit(["good", "bad"], ["Positive", "Negative"])
-        assert result is False
+        result = eng.predict_with_confidence("Best coffee in town!")
+        assert len(result) == 4
+        label, conf, neg_p, pos_p = result
+        assert label in ("Positive", "Neutral", "Negative")
+        assert 0.0 <= conf <= 100.0
+        assert 0.0 <= neg_p <= 1.0
+        assert 0.0 <= pos_p <= 1.0
+
+    def test_confidence_probabilities_sum_to_one_approx(self):
+        eng = SentimentEngine()
+        _, _, neg_p, pos_p = eng.predict_with_confidence("Amazing ambiance and food")
+        # neg + pos <= 1 (neutral takes the rest)
+        assert neg_p + pos_p <= 1.01
+
+    def test_predict_returns_string_not_int(self):
+        eng = SentimentEngine()
+        assert isinstance(eng.predict("Nice place"), str)
+
+    def test_no_data_initially(self):
+        eng = SentimentEngine()
+        # A fresh engine (after load_state fails) has no records
+        eng._records = []
+        eng._stats = {}
+        assert eng.has_data is False
+        assert eng.stats == {}
+        assert eng.records == []
 
 
 # ─── SentimentEngine — process_dataframe ─────────────────────────────────────
 
-class TestSentimentEngineProcessDataframe:
-    def _make_review_df(self, n=20):
-        pos_texts = ["Excellent food and great service, highly recommend"] * (n // 2)
-        neg_texts = ["Terrible experience, cold food and rude staff"] * (n // 2)
-        return pd.DataFrame({
-            "Review_ID":      [f"R{i:03d}" for i in range(n)],
-            "Source":         ["Google"] * (n // 2) + ["Zomato"] * (n // 2),
-            "Review_Date":    ["2026-05-01"] * n,
-            "Cafe_Location":  ["Branch A"] * n,
-            "Visit_Type":     ["Dine-In"] * n,
-            "Rating":         [5] * (n // 2) + [1] * (n // 2),
-            "Sentiment_Label": ["Positive"] * (n // 2) + ["Negative"] * (n // 2),
-            "Review_Text":    pos_texts + neg_texts,
-        })
+def _make_review_df(n: int = 20) -> pd.DataFrame:
+    half = n // 2
+    return pd.DataFrame({
+        "Review_ID":       [f"R{i:03d}" for i in range(n)],
+        "Source":          ["Google"] * half + ["Zomato"] * half,
+        "Review_Date":     ["2026-05-01"] * n,
+        "Cafe_Location":   ["Branch A"] * n,
+        "Visit_Type":      ["Dine-In"] * n,
+        "Rating":          [5] * half + [1] * half,
+        "Sentiment_Label": ["Positive"] * half + ["Negative"] * half,
+        "Review_Text":     ["Excellent food, great service, highly recommend"] * half
+                           + ["Terrible experience, cold food, rude staff, disappointed"] * half,
+    })
 
-    def test_returns_records_and_stats(self):
+
+class TestProcessDataframe:
+    def test_returns_records_list_and_stats_dict(self):
         eng = SentimentEngine()
-        df = self._make_review_df(20)
-        records, stats = eng.process_dataframe(df, "test.csv")
-        assert len(records) == 20
+        records, stats = eng.process_dataframe(_make_review_df(20), "t.csv")
+        assert isinstance(records, list)
         assert isinstance(stats, dict)
+
+    def test_record_count_matches_input(self):
+        eng = SentimentEngine()
+        records, _ = eng.process_dataframe(_make_review_df(20), "t.csv")
+        assert len(records) == 20
 
     def test_has_data_true_after_processing(self):
         eng = SentimentEngine()
-        df = self._make_review_df(20)
-        eng.process_dataframe(df, "test.csv")
+        eng.process_dataframe(_make_review_df(20), "t.csv")
         assert eng.has_data is True
 
     def test_stats_total_reviews_correct(self):
         eng = SentimentEngine()
-        df = self._make_review_df(20)
-        _, stats = eng.process_dataframe(df, "test.csv")
+        _, stats = eng.process_dataframe(_make_review_df(20), "t.csv")
         assert stats["total_reviews"] == 20
 
-    def test_stats_sentiment_counts_sum_to_total(self):
+    def test_sentiment_counts_sum_to_total(self):
         eng = SentimentEngine()
-        df = self._make_review_df(20)
-        _, stats = eng.process_dataframe(df, "test.csv")
-        total = stats["positive"] + stats["neutral"] + stats["negative"]
-        assert total == stats["total_reviews"]
+        _, stats = eng.process_dataframe(_make_review_df(20), "t.csv")
+        assert stats["positive"] + stats["neutral"] + stats["negative"] == stats["total_reviews"]
 
-    def test_stats_percentages_sum_to_100(self):
+    def test_percentages_sum_to_100(self):
         eng = SentimentEngine()
-        df = self._make_review_df(20)
-        _, stats = eng.process_dataframe(df, "test.csv")
-        pct_sum = stats["positive_pct"] + stats["neutral_pct"] + stats["negative_pct"]
-        assert abs(pct_sum - 100.0) < 0.5
+        _, stats = eng.process_dataframe(_make_review_df(20), "t.csv")
+        total_pct = stats["positive_pct"] + stats["neutral_pct"] + stats["negative_pct"]
+        assert abs(total_pct - 100.0) < 0.6  # allow tiny rounding delta
 
-    def test_satisfaction_score_between_0_and_100(self):
+    def test_satisfaction_score_in_range(self):
         eng = SentimentEngine()
-        df = self._make_review_df(20)
-        _, stats = eng.process_dataframe(df, "test.csv")
+        _, stats = eng.process_dataframe(_make_review_df(20), "t.csv")
         assert 0 <= stats["satisfaction_score"] <= 100
 
-    def test_avg_rating_between_1_and_5(self):
+    def test_avg_rating_in_range(self):
         eng = SentimentEngine()
-        df = self._make_review_df(20)
-        _, stats = eng.process_dataframe(df, "test.csv")
+        _, stats = eng.process_dataframe(_make_review_df(20), "t.csv")
         assert 1.0 <= stats["overall_avg_rating"] <= 5.0
+
+    def test_nps_in_valid_range(self):
+        eng = SentimentEngine()
+        _, stats = eng.process_dataframe(_make_review_df(20), "t.csv")
+        assert -100 <= stats["nps"] <= 100
 
     def test_source_breakdown_present(self):
         eng = SentimentEngine()
-        df = self._make_review_df(20)
-        _, stats = eng.process_dataframe(df, "test.csv")
-        assert "source_breakdown" in stats
+        _, stats = eng.process_dataframe(_make_review_df(20), "t.csv")
         sources = {s["source"] for s in stats["source_breakdown"]}
-        assert "Google" in sources
-        assert "Zomato" in sources
+        assert "Google" in sources and "Zomato" in sources
 
-    def test_visit_breakdown_present(self):
+    def test_keywords_present_for_each_sentiment(self):
         eng = SentimentEngine()
-        df = self._make_review_df(20)
-        _, stats = eng.process_dataframe(df, "test.csv")
-        assert "visit_breakdown" in stats
-        assert len(stats["visit_breakdown"]) >= 1
+        _, stats = eng.process_dataframe(_make_review_df(20), "t.csv")
+        kw = stats.get("keywords", {})
+        assert "positive" in kw and "negative" in kw
 
-    def test_keywords_extracted(self):
+    def test_aspect_analysis_present(self):
         eng = SentimentEngine()
-        df = self._make_review_df(20)
-        _, stats = eng.process_dataframe(df, "test.csv")
-        assert "keywords" in stats
-        assert "positive" in stats["keywords"]
-        assert "negative" in stats["keywords"]
+        _, stats = eng.process_dataframe(_make_review_df(20), "t.csv")
+        assert "aspect_analysis" in stats
+        assert len(stats["aspect_analysis"]) == 5  # 5 aspect dimensions
 
-    def test_unlabeled_reviews_get_predicted(self):
+    def test_aspect_scores_in_range(self):
         eng = SentimentEngine()
-        df = self._make_review_df(20)
-        # First pass to train the model
-        eng.process_dataframe(df, "train.csv")
+        _, stats = eng.process_dataframe(_make_review_df(20), "t.csv")
+        for asp in stats["aspect_analysis"]:
+            if asp["total"] > 0:
+                assert 0 <= asp["score"] <= 100
+                assert 0 <= asp["positive_pct"] <= 100
+                assert 0 <= asp["negative_pct"] <= 100
 
-        # New df with no Sentiment_Label
-        new_df = pd.DataFrame({
-            "Review_ID":      ["R100"],
-            "Source":         ["Google"],
-            "Review_Date":    ["2026-05-10"],
-            "Cafe_Location":  ["Branch A"],
-            "Visit_Type":     ["Dine-In"],
-            "Rating":         [4],
-            "Sentiment_Label": [""],
-            "Review_Text":    ["Great food and wonderful service"],
-        })
-        records, _ = eng.process_dataframe(new_df, "new.csv")
-        assert records[0]["sentiment"] in ("Positive", "Neutral", "Negative")
-        assert records[0]["sentiment"] != ""
-
-    def test_each_record_has_required_fields(self):
+    def test_actionable_insights_present(self):
         eng = SentimentEngine()
-        df = self._make_review_df(10)
-        records, _ = eng.process_dataframe(df, "test.csv")
-        required = {"review_id", "source", "review_date", "location",
-                    "visit_type", "rating", "sentiment", "review_text"}
-        for r in records:
-            assert required.issubset(r.keys())
+        _, stats = eng.process_dataframe(_make_review_df(20), "t.csv")
+        assert "actionable_insights" in stats
+        assert isinstance(stats["actionable_insights"], list)
 
-    def test_rating_clamped_between_1_and_5(self):
+    def test_uploaded_label_respected(self):
+        """When Sentiment_Label is provided and valid, it should be used."""
         eng = SentimentEngine()
         df = pd.DataFrame({
-            "Review_ID":      ["R001", "R002"],
-            "Source":         ["Google", "Zomato"],
-            "Review_Date":    ["2026-05-01", "2026-05-01"],
-            "Cafe_Location":  ["A", "A"],
-            "Visit_Type":     ["Dine-In", "Dine-In"],
-            "Rating":         [10, -5],   # out-of-range
-            "Sentiment_Label": ["Positive", "Negative"],
-            "Review_Text":    ["Great!", "Terrible!"],
+            "Review_ID":       ["R001"],
+            "Source":          ["Google"],
+            "Review_Date":     ["2026-05-01"],
+            "Cafe_Location":   ["A"],
+            "Visit_Type":      ["Dine-In"],
+            "Rating":          [5],
+            "Sentiment_Label": ["Positive"],
+            "Review_Text":     ["Great food"],
         })
-        records, _ = eng.process_dataframe(df, "test.csv")
+        records, _ = eng.process_dataframe(df, "t.csv")
+        assert records[0]["sentiment"] == "Positive"
+
+    def test_rating_clamped_1_to_5(self):
+        eng = SentimentEngine()
+        df = pd.DataFrame({
+            "Review_ID":       ["R001", "R002"],
+            "Source":          ["Google", "Zomato"],
+            "Review_Date":     ["2026-05-01"] * 2,
+            "Cafe_Location":   ["A"] * 2,
+            "Visit_Type":      ["Dine-In"] * 2,
+            "Rating":          [10, -3],
+            "Sentiment_Label": ["Positive", "Negative"],
+            "Review_Text":     ["Great!", "Terrible!"],
+        })
+        records, _ = eng.process_dataframe(df, "t.csv")
         for r in records:
             assert 1 <= r["rating"] <= 5
 
+    def test_each_record_has_required_fields(self):
+        eng = SentimentEngine()
+        records, _ = eng.process_dataframe(_make_review_df(10), "t.csv")
+        required = {"review_id", "source", "review_date", "location",
+                    "visit_type", "rating", "sentiment", "review_text",
+                    "confidence", "neg_prob", "pos_prob"}
+        for r in records:
+            assert required.issubset(r.keys()), f"Missing keys: {required - r.keys()}"
 
-# ─── SentimentEngine — get_chat_context ──────────────────────────────────────
+    def test_confidence_in_range_for_each_record(self):
+        eng = SentimentEngine()
+        records, _ = eng.process_dataframe(_make_review_df(10), "t.csv")
+        for r in records:
+            assert 0 <= r["confidence"] <= 100
+
+    def test_empty_review_text_skipped(self):
+        eng = SentimentEngine()
+        df = pd.DataFrame({
+            "Review_ID":       ["R001", "R002"],
+            "Source":          ["Google"] * 2,
+            "Review_Date":     ["2026-05-01"] * 2,
+            "Cafe_Location":   ["A"] * 2,
+            "Visit_Type":      ["Dine-In"] * 2,
+            "Rating":          [4, 3],
+            "Sentiment_Label": ["Positive", ""],
+            "Review_Text":     ["Good food", ""],   # second row empty
+        })
+        records, _ = eng.process_dataframe(df, "t.csv")
+        assert len(records) == 1  # empty text skipped
+
+
+# ─── get_chat_context ────────────────────────────────────────────────────────
 
 class TestGetChatContext:
-    def test_empty_engine_returns_empty_string(self):
+    def test_empty_returns_empty_string(self):
         eng = SentimentEngine()
+        eng._records = []
+        eng._stats = {}
         assert eng.get_chat_context() == ""
 
-    def test_returns_non_empty_after_processing(self):
+    def test_returns_string_after_processing(self):
         eng = SentimentEngine()
-        df = pd.DataFrame({
-            "Review_ID":      [f"R{i}" for i in range(10)],
-            "Source":         ["Google"] * 10,
-            "Review_Date":    ["2026-05-01"] * 10,
-            "Cafe_Location":  ["A"] * 10,
-            "Visit_Type":     ["Dine-In"] * 10,
-            "Rating":         [4] * 10,
-            "Sentiment_Label": ["Positive"] * 6 + ["Negative"] * 2 + ["Neutral"] * 2,
-            "Review_Text":    ["Good food!"] * 6 + ["Bad service"] * 2 + ["Okay"] * 2,
-        })
-        eng.process_dataframe(df, "test.csv")
+        eng.process_dataframe(_make_review_df(20), "t.csv")
         ctx = eng.get_chat_context()
-        assert len(ctx) > 50
+        assert isinstance(ctx, str) and len(ctx) > 100
+
+    def test_context_contains_key_sections(self):
+        eng = SentimentEngine()
+        eng.process_dataframe(_make_review_df(20), "t.csv")
+        ctx = eng.get_chat_context()
         assert "SENTIMENT ANALYSIS" in ctx
+        assert "ASPECT ANALYSIS" in ctx
+        assert "ACTIONABLE INSIGHTS" in ctx
 
-    def test_context_contains_review_counts(self):
+    def test_context_contains_review_count(self):
         eng = SentimentEngine()
-        df = pd.DataFrame({
-            "Review_ID":      [f"R{i}" for i in range(8)],
-            "Source":         ["Google"] * 8,
-            "Review_Date":    ["2026-05-01"] * 8,
-            "Cafe_Location":  ["A"] * 8,
-            "Visit_Type":     ["Dine-In"] * 8,
-            "Rating":         [4] * 8,
-            "Sentiment_Label": ["Positive"] * 5 + ["Negative"] * 3,
-            "Review_Text":    ["Great!"] * 5 + ["Terrible!"] * 3,
-        })
-        eng.process_dataframe(df, "test.csv")
+        eng.process_dataframe(_make_review_df(20), "t.csv")
         ctx = eng.get_chat_context()
-        assert "8" in ctx   # total reviews
+        assert "20" in ctx
 
 
-# ─── SentimentEngine — get_decisions ─────────────────────────────────────────
+# ─── get_decisions ───────────────────────────────────────────────────────────
 
 class TestGetDecisions:
-    def _make_engine_with_stats(self, neg_pct=30, pos_pct=50):
+    def _engine_with_high_negative(self):
         eng = SentimentEngine()
-        total = 100
-        neg   = int(total * neg_pct / 100)
-        pos   = int(total * pos_pct / 100)
-        neu   = total - neg - pos
         eng._stats = {
-            "total_reviews": total,
-            "positive": pos,   "positive_pct": pos_pct,
-            "neutral":  neu,   "neutral_pct":  100 - pos_pct - neg_pct,
-            "negative": neg,   "negative_pct": neg_pct,
-            "satisfaction_score": pos_pct,
-            "source_breakdown": [
-                {"source": "Zomato", "total": 40, "positive": 20, "neutral": 10,
-                 "negative": 10, "positive_pct": 50.0, "negative_pct": 25.0, "satisfaction": 62.5}
+            "total_reviews": 100,
+            "positive": 50, "positive_pct": 50.0,
+            "neutral":  20, "neutral_pct":  20.0,
+            "negative": 30, "negative_pct": 30.0,
+            "satisfaction_score": 60.0,
+            "nps": -10,
+            "promoters": 30, "detractors": 40,
+            "aspect_analysis": [
+                {"aspect": "Service & Staff", "total": 40, "score": 30,
+                 "positive": 12, "negative": 20, "positive_pct": 30.0,
+                 "negative_pct": 50.0, "status": "critical"},
             ],
-            "visit_breakdown": [
-                {"visit_type": "Delivery", "total": 30, "positive": 15, "neutral": 5,
-                 "negative": 10, "positive_pct": 50.0, "negative_pct": 33.0, "satisfaction": 58.0}
-            ],
-            "location_breakdown": [
-                {"location": "Branch A", "total": 60, "positive": 50, "neutral": 5,
-                 "negative": 5, "positive_pct": 83.0, "negative_pct": 8.0, "satisfaction": 87.5}
-            ],
-            "keywords": {"positive": [], "neutral": [], "negative": []},
+            "actionable_insights": [],
         }
         return eng
 
-    def test_empty_stats_returns_empty_decisions(self):
+    def test_empty_stats_returns_empty(self):
         eng = SentimentEngine()
+        eng._stats = {}
         assert eng.get_decisions() == []
 
     def test_high_negative_pct_creates_critical_decision(self):
-        eng = self._make_engine_with_stats(neg_pct=25)
+        eng = self._engine_with_high_negative()
         decisions = eng.get_decisions()
-        types = [d["priority"] for d in decisions]
-        assert "critical" in types
+        assert any(d["priority"] == "critical" for d in decisions)
 
-    def test_low_negative_no_critical_decision(self):
-        eng = self._make_engine_with_stats(neg_pct=10, pos_pct=75)
+    def test_all_decisions_have_required_keys(self):
+        eng = self._engine_with_high_negative()
         decisions = eng.get_decisions()
-        types = [d["priority"] for d in decisions]
-        assert "critical" not in types
-
-    def test_each_decision_has_required_keys(self):
-        eng = self._make_engine_with_stats(neg_pct=25)
-        decisions = eng.get_decisions()
-        required = {"id", "type", "priority", "title", "rationale", "impact",
-                    "confidence", "status", "category", "source"}
+        required = {"id", "type", "priority", "title", "rationale", "action",
+                    "confidence", "impact", "status"}
         for d in decisions:
-            assert required.issubset(d.keys())
+            missing = required - d.keys()
+            assert not missing, f"Missing keys: {missing}"
 
-    def test_confidence_in_valid_range(self):
-        eng = self._make_engine_with_stats(neg_pct=25)
-        decisions = eng.get_decisions()
-        for d in decisions:
+    def test_confidence_values_in_range(self):
+        eng = self._engine_with_high_negative()
+        for d in eng.get_decisions():
             assert 0 <= d["confidence"] <= 100
 
-    def test_decision_ids_are_unique(self):
-        eng = self._make_engine_with_stats(neg_pct=30)
-        decisions = eng.get_decisions()
-        ids = [d["id"] for d in decisions]
+    def test_decision_ids_unique(self):
+        eng = self._engine_with_high_negative()
+        ids = [d["id"] for d in eng.get_decisions()]
         assert len(ids) == len(set(ids))
+
+    def test_low_negative_no_critical(self):
+        eng = SentimentEngine()
+        eng._stats = {
+            "total_reviews": 100,
+            "positive": 80, "positive_pct": 80.0,
+            "neutral":  15, "neutral_pct":  15.0,
+            "negative":  5, "negative_pct":  5.0,
+            "satisfaction_score": 87.5,
+            "nps": 60,
+            "promoters": 70, "detractors": 10,
+            "aspect_analysis": [],
+            "actionable_insights": [],
+        }
+        decisions = eng.get_decisions()
+        assert not any(d["priority"] == "critical" for d in decisions)

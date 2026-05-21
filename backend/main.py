@@ -313,40 +313,53 @@ def _weekday_forecast(data: list, days: int = 7) -> list:
         daily_rev[r["date"]]    += r.get("revenue", r.get("daily_revenue", 0))
         daily_orders[r["date"]] += 1
 
-    # Step 2 — compute weekday averages from daily totals.
+    # Step 2 — compute weekday averages and std-devs from daily totals.
     wd_total: dict = defaultdict(float)
     wd_count: dict = defaultdict(int)
+    wd_values: dict = defaultdict(list)
     for date_str, rev in daily_rev.items():
         try:
             d = datetime.strptime(date_str, "%Y-%m-%d")
             wd_total[d.weekday()] += rev
             wd_count[d.weekday()] += 1
+            wd_values[d.weekday()].append(rev)
         except Exception:
             pass
 
     n_days = max(len(daily_rev), 1)
     overall_avg = sum(daily_rev.values()) / n_days
     wd_avg = {wd: wd_total[wd] / wd_count[wd] for wd in wd_total}
+
+    # Compute std dev per weekday for bounds
+    wd_std: dict = {}
+    for wd, vals in wd_values.items():
+        if len(vals) > 1:
+            mean = wd_avg[wd]
+            wd_std[wd] = (sum((v - mean) ** 2 for v in vals) / len(vals)) ** 0.5
+        else:
+            wd_std[wd] = wd_avg.get(wd, overall_avg) * 0.10
+
     avg_orders_per_day = sum(daily_orders.values()) / n_days
+    confidence = min(88, 55 + min(30, n_days // 7))
 
     day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
     result = []
     for i in range(1, days + 1):
         date = datetime.now() + timedelta(days=i)
         wd = date.weekday()
-        base = wd_avg.get(wd, overall_avg)
-        noise = random.uniform(0.93, 1.07)
-        rev = int(base * noise)
-        est_orders = max(1, int(avg_orders_per_day * (1.1 if wd >= 5 else 1.0) * noise))
+        rev = int(wd_avg.get(wd, overall_avg))
+        std_dev = wd_std.get(wd, rev * 0.10)
+        upper = rev + int(std_dev)
+        lower = max(0, rev - int(std_dev))
+        est_orders = max(1, int(avg_orders_per_day * (1.1 if wd >= 5 else 1.0)))
         result.append({
             "date": date.strftime("%Y-%m-%d"),
             "day": day_names[wd],
             "predicted_revenue": rev,
-            "upper": int(rev * 1.09),
-            "lower": int(rev * 0.91),
+            "upper": upper,
+            "lower": lower,
             "predicted_orders": est_orders,
-            "confidence": round(random.uniform(80, 94), 1),
-            "weather": "Rainy" if i == 3 else "Clear",
+            "confidence": confidence,
             "is_weekend": wd >= 5,
         })
     return result
@@ -373,7 +386,8 @@ def _generate_decisions(data: list) -> list:
                               f"{item['qty']:.0f} units sold). "
                               f"Margin at {item['margin_pct']:.1f}% supports a price increase without demand erosion."),
                 "impact": f"+₹{monthly:,}/month",
-                "confidence": round(random.uniform(84, 94), 1),
+                "confidence": min(92, 60 + min(28, int(item['margin_pct'] / 2))),
+                "source": "POS Data Analysis",
                 "status": "pending", "category": "Revenue Optimization",
             })
             did += 1
@@ -389,7 +403,8 @@ def _generate_decisions(data: list) -> list:
                               f"Total revenue ₹{item['revenue']:,.0f} over {n_days} days. "
                               f"Consider recipe cost reduction or bundling."),
                 "impact": "Free kitchen capacity for high-margin items",
-                "confidence": round(random.uniform(72, 82), 1),
+                "confidence": min(85, 55 + min(25, int(max(0, 30 - item['margin_pct']) * 0.8))),
+                "source": "POS Data Analysis",
                 "status": "pending", "category": "Menu Optimization",
             })
             did += 1
@@ -405,7 +420,8 @@ def _generate_decisions(data: list) -> list:
             "rationale": (f"{top['platform']} generated ₹{top['revenue']:,.0f} total "
                           f"({top['orders']} orders). Targeted promo campaigns can grow this channel by 12–18%."),
             "impact": f"+₹{monthly:,}/month",
-            "confidence": round(random.uniform(78, 88), 1),
+            "confidence": min(88, 65 + min(20, int(top['revenue'] / max(sum(p['revenue'] for p in platforms), 1) * 40))),
+            "source": "POS Data Analysis",
             "status": "pending", "category": "Marketing",
         })
         did += 1
@@ -435,7 +451,8 @@ def _generate_decisions(data: list) -> list:
                               f"{((w_avg / d_avg) - 1) * 100:.0f}% higher. "
                               f"Current capacity risks 18-min service delays."),
                 "impact": "+₹8,400 weekend revenue protection",
-                "confidence": round(random.uniform(82, 90), 1),
+                "confidence": min(90, 70 + min(15, int(abs(w_avg - d_avg) / max(d_avg, 1) * 30))),
+                "source": "POS Data Analysis",
                 "status": "pending", "category": "Operations",
             })
             did += 1
@@ -658,7 +675,11 @@ _manual_entries: list = []
 def add_sales(entry: SalesEntry):
     row = {**entry.model_dump(),
            "revenue": entry.quantity * entry.price,
-           "cost":    entry.quantity * entry.price * 0.38,
+           "cost":    round(entry.quantity * entry.price * (
+    sum(r["cost"] for r in data_store._pos_data if r.get("cost", 0) > 0) /
+    max(sum(r["revenue"] for r in data_store._pos_data if r.get("cost", 0) > 0 and r.get("revenue", 0) > 0), 1)
+    if data_store._pos_data and any(r.get("cost", 0) > 0 for r in data_store._pos_data) else 0.0
+), 2),
            "quantity": float(entry.quantity)}
     _manual_entries.append(row)
     if _uploaded_data:
@@ -668,6 +689,46 @@ def add_sales(entry: SalesEntry):
 # ─────────────────────────────────────────────
 # LAYER 2 — DATA ENGINEERING
 # ─────────────────────────────────────────────
+
+def _dq_accuracy() -> float:
+    """Ratio of records that passed validation vs total attempted."""
+    good = len(data_store._pos_data) + len(data_store._financial_data) + len(data_store._customer_data)
+    skipped = (data_store._pos_info.get("skipped", 0) +
+               data_store._financial_info.get("skipped", 0) +
+               data_store._customer_info.get("skipped", 0))
+    return round(good / max(good + skipped, 1) * 100, 1) if good else 0.0
+
+
+def _dq_consistency() -> float:
+    """Detect duplicate dates in financial data (1 record per day expected)."""
+    fd = data_store._financial_data
+    if not fd:
+        return 100.0
+    dates = [r["date"] for r in fd]
+    dups = len(dates) - len(set(dates))
+    return round(max(0.0, 100.0 - (dups / max(len(dates), 1)) * 100), 1)
+
+
+def _dq_timeliness() -> float:
+    """Score based on how recently data was uploaded (100% = today, decays hourly)."""
+    timestamps = [
+        data_store._pos_info.get("uploaded_at", ""),
+        data_store._financial_info.get("uploaded_at", ""),
+    ]
+    latest = None
+    for ts in timestamps:
+        if ts:
+            try:
+                t = datetime.strptime(ts[:19], "%Y-%m-%d %H:%M:%S")
+                if latest is None or t > latest:
+                    latest = t
+            except Exception:
+                pass
+    if latest is None:
+        return 0.0
+    hours_ago = (datetime.now() - latest).total_seconds() / 3600
+    return round(max(50.0, 100.0 - hours_ago * 0.5), 1)
+
 
 @app.get("/api/layer2/pipeline-status")
 def pipeline_status():
@@ -697,11 +758,12 @@ def pipeline_status():
                           "success_rate": 100.0, "duration": "—"})
 
     if se.has_data:
-        pipelines.append({"name": "Review Sentiment NLP (TF-IDF + LinearSVC)",
+        pipelines.append({"name": "Review Sentiment NLP (Logistic Regression + TF-IDF)",
                           "status": "completed",
                           "last_run": se.info.get("uploaded_at", "—"),
                           "records": se.info.get("total_reviews", 0),
-                          "success_rate": 93.4, "duration": "—"})
+                          "success_rate": round(se.stats.get("avg_model_confidence", 100.0), 1),
+                          "duration": "—"})
 
     if data_store._menu_data:
         mi = data_store._menu_info
@@ -723,9 +785,9 @@ def pipeline_status():
         "pipelines": pipelines,
         "data_quality": {
             "completeness": completeness,
-            "accuracy":     98.1 if data else 0.0,
-            "consistency":  96.8 if data else 0.0,
-            "timeliness":   99.0 if data else 0.0,
+            "accuracy":     _dq_accuracy(),
+            "consistency":  _dq_consistency(),
+            "timeliness":   _dq_timeliness(),
         },
         "total_records_today": total,
         "anomalies_detected":  0,
@@ -922,7 +984,7 @@ def forecast():
     return {
         "forecast":        result,
         "model":           "Weekday Average Heuristic",
-        "accuracy":        round(76.4, 1),
+        "accuracy":        round(min(85, 55 + min(28, n_days // 7)), 1),
         "last_trained":    "Computed from daily averages",
         "training_records": len(data),
         "data_days":       n_days,
@@ -961,14 +1023,35 @@ def product_recommendations():
             pass
 
     if not fbt:
-        top5 = [i["name"] for i in items[:5]]
-        for i in range(min(4, len(top5) - 1)):
-            fbt.append({
-                "items":      [top5[i], top5[i + 1]],
-                "confidence": round(random.uniform(40, 80), 1),
-                "lift":       round(random.uniform(1.2, 2.5), 1),
-                "orders":     int(items[i]["qty"] * 0.3),
-            })
+        from collections import defaultdict as _dd, Counter as _Ctr
+        pos = data_store._pos_data
+        if pos and any(r.get("order_id") for r in pos):
+            order_items: dict = _dd(set)
+            for r in pos:
+                oid = r.get("order_id", "")
+                if oid:
+                    order_items[oid].add(r.get("item_name", ""))
+            pair_counts: _Ctr = _Ctr()
+            item_counts: _Ctr = _Ctr()
+            for its in order_items.values():
+                lst = sorted(its)
+                for itm in lst:
+                    item_counts[itm] += 1
+                for ii in range(len(lst)):
+                    for jj in range(ii + 1, len(lst)):
+                        pair_counts[(lst[ii], lst[jj])] += 1
+            n_orders = max(len(order_items), 1)
+            for (a, b), cnt in pair_counts.most_common(4):
+                conf = round(cnt / max(item_counts[a], 1) * 100, 1)
+                lift = round(cnt * n_orders / max(item_counts[a] * item_counts[b], 1), 2)
+                fbt.append({"items": [a, b], "confidence": conf, "lift": lift, "orders": cnt})
+        else:
+            top5 = [it["name"] for it in items[:5]]
+            total_qty = max(sum(it["qty"] for it in items), 1)
+            for idx in range(min(4, len(top5) - 1)):
+                support = round(items[idx]["qty"] / total_qty * 100, 1)
+                fbt.append({"items": [top5[idx], top5[idx + 1]], "confidence": support,
+                            "lift": 1.0, "orders": int(items[idx]["qty"] * 0.2)})
 
     return {
         "frequently_bought_together": fbt,
@@ -1018,13 +1101,19 @@ def customer_segmentation():
         if not current or current <= 0:
             # Last resort: revenue / qty from POS aggregates
             current = round(it["revenue"] / max(it["qty"], 1), 0)
-        optimal = round(current * random.uniform(1.05, 1.15), 0)
+        margin = it.get("margin_pct", 40)
+        # Elasticity: high-margin items are more inelastic (-0.5), low-margin more elastic (-1.5)
+        elasticity_val = round(-0.5 - max(0.0, (60.0 - min(margin, 60.0)) / 60.0), 1)
+        # Uplift: 5% for margin>50%, 3% for 30-50%, 0% below 30%
+        uplift = 1.05 if margin > 50 else (1.03 if margin > 30 else 1.0)
+        optimal = round(current * uplift, 0)
+        upside_pct = round((uplift - 1.0) * 100, 1)
         elasticity.append({
             "item":          it["name"],
-            "elasticity":    round(random.uniform(-1.6, -0.5), 1),
+            "elasticity":    elasticity_val,
             "current_price": int(current),
             "optimal_price": int(optimal),
-            "upside":        f"+{round(random.uniform(5, 14), 1)}%",
+            "upside":        f"+{upside_pct}%",
         })
 
     return {"segments": segments, "price_elasticity": elasticity}
