@@ -30,6 +30,11 @@ proc.stdout.on('data', (chunk) => {
       }
       if (obj.err && obj.err !== '<nil>') log(`error: ${obj.err}`)
       if (obj.lvl === 'error' && obj.msg)  log(`error: ${obj.msg}`)
+      // session closed = ngrok lost connection to its servers — exit so PM2 restarts
+      if (obj.msg && obj.msg.includes('session closed')) {
+        log('session closed — restarting ngrok now')
+        shutdown()
+      }
     } catch (_) {}
   }
 })
