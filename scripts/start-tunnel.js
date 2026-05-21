@@ -1,104 +1,100 @@
-// Robust localtunnel with strict single-connection guarantee.
-// Uses an 'isConnecting' mutex so error + close events never schedule
-// two simultaneous reconnects (the original cause of random subdomains).
-const localtunnel = require('C:/Users/HP/AppData/Roaming/npm/node_modules/localtunnel')
+// Cloudflare Quick Tunnel — no account needed, port-443-only, rock-solid.
+// Much more reliable than localtunnel (which used random high ports that
+// firewalls/ISPs block). Cloudflare only needs outbound port 443.
+//
+// The URL is a random *.trycloudflare.com subdomain that stays fixed for
+// the lifetime of this process. On restart it gets a new URL — the log
+// clearly prints it so teammates always know the current address.
+//
+// For a PERMANENT fixed URL: sign up free at ngrok.com, get a static domain,
+// add authtoken, then switch the script to use ngrok.
 
-const PORT      = 8000
-const SUBDOMAIN = 'cafebuddy-ai'
-const URL       = `https://${SUBDOMAIN}.loca.lt`
+const { spawn } = require('child_process')
+const path      = require('path')
 
-const MIN_DELAY = 5000    // 5 s minimum between attempts
-const MAX_DELAY = 60000   // 60 s maximum backoff
+const PORT          = 8000
+const CLOUDFLARED   = path.join(__dirname, '..', 'cloudflared.exe')
 
-let activeTunnel  = null
-let isConnecting  = false   // mutex — only one connect() in-flight at a time
-let retryDelay    = MIN_DELAY
-let retryTimer    = null
+let proc        = null
+let retryDelay  = 5000
+let retryTimer  = null
+let isStarting  = false
 
 function log(msg) {
   const ts = new Date().toISOString().replace('T', ' ').slice(0, 19)
   console.log(`[${ts}] [tunnel] ${msg}`)
 }
 
-function scheduleReconnect() {
-  // If already connecting or a timer is already pending, do nothing.
-  if (isConnecting || retryTimer) return
-  log(`reconnecting in ${retryDelay / 1000}s…`)
-  retryTimer = setTimeout(() => {
-    retryTimer = null
-    connect()
-  }, retryDelay)
-  retryDelay = Math.min(retryDelay * 2, MAX_DELAY)
+function scheduleReconnect(reason) {
+  if (retryTimer || isStarting) return
+  log(`${reason} — reconnecting in ${retryDelay / 1000}s`)
+  retryTimer = setTimeout(() => { retryTimer = null; start() }, retryDelay)
+  retryDelay = Math.min(retryDelay * 2, 60000)
 }
 
-async function connect() {
-  if (isConnecting) return          // strict mutex
-  isConnecting = true
+function start() {
+  if (isStarting) return
+  isStarting = true
 
-  log(`connecting → ${URL}`)
-  try {
-    const tunnel = await localtunnel({ port: PORT, subdomain: SUBDOMAIN })
-    activeTunnel = tunnel
-    retryDelay   = MIN_DELAY        // reset backoff on success
-    isConnecting = false
-    log(`UP — your url is: ${tunnel.url}`)
+  log(`starting Cloudflare tunnel → localhost:${PORT}`)
 
-    if (tunnel.url !== URL) {
-      // Subdomain was taken — close and retry so we always serve the right URL
-      log(`wrong subdomain assigned (${tunnel.url}) — retrying to claim ${URL}`)
-      tunnel.close()
-      return                        // 'close' event will call scheduleReconnect
+  proc = spawn(CLOUDFLARED, [
+    'tunnel', '--url', `http://localhost:${PORT}`,
+    '--no-autoupdate',
+  ], { stdio: ['ignore', 'pipe', 'pipe'] })
+
+  let urlFound = false
+
+  function parseLine(line) {
+    // cloudflared prints the URL to stderr in a line like:
+    //   https://xxxx-xxxx.trycloudflare.com
+    const match = line.match(/https:\/\/[a-z0-9\-]+\.trycloudflare\.com/)
+    if (match && !urlFound) {
+      urlFound = true
+      retryDelay = 5000   // reset backoff
+      log(`\n  ┌─────────────────────────────────────────────────────┐`)
+      log(`  │  🌐 PUBLIC URL: ${match[0].padEnd(35)} │`)
+      log(`  │  Share this link with your team!                    │`)
+      log(`  └─────────────────────────────────────────────────────┘`)
     }
-
-    tunnel.on('error', (err) => {
-      log(`error: ${err.message}`)
-      // Do NOT call tunnel.close() here — that fires 'close' again.
-      // Just let the tunnel die; 'close' will handle the reconnect.
-    })
-
-    tunnel.on('close', () => {
-      activeTunnel = null
-      log('connection closed')
-      scheduleReconnect()
-    })
-
-  } catch (err) {
-    isConnecting = false
-    activeTunnel = null
-    log(`failed: ${err.message}`)
-    scheduleReconnect()
+    if (line.includes('ERR') || line.includes('error')) {
+      log(`cloudflare: ${line.trim()}`)
+    }
   }
+
+  proc.stdout.on('data', d => d.toString().split('\n').filter(Boolean).forEach(parseLine))
+  proc.stderr.on('data', d => d.toString().split('\n').filter(Boolean).forEach(parseLine))
+
+  proc.on('spawn', () => {
+    isStarting = false
+    log('cloudflared process started — waiting for URL…')
+  })
+
+  proc.on('error', (err) => {
+    isStarting = false
+    proc = null
+    log(`failed to start: ${err.message}`)
+    scheduleReconnect('spawn error')
+  })
+
+  proc.on('exit', (code, signal) => {
+    isStarting = false
+    proc = null
+    log(`exited (code=${code} signal=${signal})`)
+    scheduleReconnect('process exited')
+  })
 }
 
-// Periodic health-check — if backend stops responding, log a warning
-// (don't kill the tunnel; the backend will restart on its own via PM2)
-setInterval(async () => {
-  if (!activeTunnel) return
-  try {
-    const http = require('http')
-    await new Promise((resolve, reject) => {
-      const req = http.get(`http://localhost:${PORT}/health`, { timeout: 4000 }, (res) => {
-        res.resume(); resolve(res.statusCode)
-      })
-      req.on('error', reject)
-      req.on('timeout', () => { req.destroy(); reject(new Error('timeout')) })
-    })
-  } catch {
-    log('health-check failed — backend may be temporarily down')
-  }
-}, 60000)
-
-// Graceful shutdown
 function shutdown() {
   if (retryTimer) clearTimeout(retryTimer)
-  if (activeTunnel) activeTunnel.close()
+  if (proc) proc.kill()
   process.exit(0)
 }
 process.on('SIGINT',  shutdown)
 process.on('SIGTERM', shutdown)
 
-// Start after a short delay to let the backend fully boot
-setTimeout(connect, 4000)
+// Start after backend has had time to boot
+setTimeout(start, 3000)
 
 // Keep the process alive
 setInterval(() => {}, 1 << 30)
