@@ -20,9 +20,9 @@ module.exports = {
       cwd: 'C:/Users/HP/cafe-buddy',
       watch: false,
       autorestart: true,
-      restart_delay: 10000,        // 10s so loca.lt fully releases the subdomain
+      restart_delay: 5000,           // 5s — ngrok reconnects fast, no subdomain wait
       max_restarts: 999,
-      exp_backoff_restart_delay: 0,  // fixed delay, no exponential backoff
+      exp_backoff_restart_delay: 0,  // fixed delay, always retry
       log_file: 'C:/Users/HP/cafe-buddy/logs/tunnel.log',
       error_file: 'C:/Users/HP/cafe-buddy/logs/tunnel-err.log',
       merge_logs: true,
