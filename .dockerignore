@@ -26,3 +26,15 @@ serveo_*.log
 # Docs / meta
 README.md
 render.yaml
+
+# Local tunnel / ngrok
+ngrok.exe
+scripts/tunnel.bat
+
+# Uploaded data (cloud uses persistent volume)
+backend/data/
+
+# Large auto-generated model files (not needed in cloud)
+backend/models/random_forest.pkl
+backend/models/xgboost.pkl
+backend/models/lstm.keras
