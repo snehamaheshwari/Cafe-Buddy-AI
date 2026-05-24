@@ -134,4 +134,11 @@ export const api = {
     dynamicPricing:   () => get('/ml/dynamic-pricing'),
     modelComparison:  () => get('/ml/model-comparison'),
   },
+  peers: {
+    cities:      ()                             => get<any>('/peers/cities'),
+    areas:       (city: string)                 => get<any>(`/peers/areas?city=${encodeURIComponent(city)}`),
+    competitors: (city: string, area?: string)  => get<any>(`/peers/competitors?city=${encodeURIComponent(city)}${area ? `&area=${encodeURIComponent(area)}` : ''}`),
+    liveSearch:  (city: string, area: string)   => get<any>(`/peers/live-search?city=${encodeURIComponent(city)}&area=${encodeURIComponent(area)}`),
+    analyze:     (city: string, area?: string)  => post<any>('/peers/analyze', { city, area }),
+  },
 }

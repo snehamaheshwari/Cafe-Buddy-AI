@@ -1,6 +1,6 @@
 import { NavLink, useLocation } from 'react-router-dom'
 import { useEffect } from 'react'
-import { LayoutDashboard, Database, BarChart2, TrendingUp, Lightbulb, Rocket, MessageCircle, Coffee, ChevronRight, X, Bell } from 'lucide-react'
+import { LayoutDashboard, Database, BarChart2, TrendingUp, Lightbulb, Rocket, MessageCircle, Coffee, ChevronRight, X, Bell, Target } from 'lucide-react'
 import { useSidebar } from '../context/SidebarContext'
 
 const NAV_ITEMS = [
@@ -12,6 +12,7 @@ const NAV_ITEMS = [
   { to: '/cafe-os',         label: 'Auto-Pilot Mode',        icon: Rocket,          desc: 'Automated operations'     },
   { to: '/chatbot',         label: 'Ask Cafe Buddy',         icon: MessageCircle,   desc: 'Chat with your AI helper' },
   { to: '/notifications',   label: 'WhatsApp Alerts',        icon: Bell,            desc: 'Free daily summaries'     },
+  { to: '/peer-comparison', label: 'Market Radar',            icon: Target,          desc: 'Benchmark vs nearby cafés' },
 ]
 
 export default function Sidebar() {

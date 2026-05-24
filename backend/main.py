@@ -17,6 +17,7 @@ from chatbot import router as chatbot_router
 from multi_upload import router as multi_upload_router
 from sentiment_engine import get_engine as get_sentiment_engine
 import ml_models
+import peer_comparison as pc
 
 app = FastAPI(title="Cafe Buddy API", version="2.0.0")
 app.include_router(chatbot_router, prefix="/api")
@@ -1318,6 +1319,51 @@ def autonomous_actions():
 def kpis():
     return {"kpis": _calc_kpis(get_data())}
 
+
+# ─────────────────────────────────────────────
+# PEER COMPARISON — MARKET RADAR
+# ─────────────────────────────────────────────
+
+class PeerAnalyzeRequest(BaseModel):
+    city: str
+    area: Optional[str] = None
+
+@app.get("/api/peers/cities")
+def get_peer_cities():
+    return {"cities": pc.CITIES}
+
+@app.get("/api/peers/areas")
+def get_peer_areas(city: str):
+    return {"areas": pc.get_areas(city)}
+
+@app.get("/api/peers/competitors")
+def get_peer_competitors(city: str, area: Optional[str] = None):
+    competitors = pc.get_competitors(city, area)
+    for c in competitors:
+        c["radar_scores"] = pc.compute_radar_scores(c)
+    return {"city": city, "area": area, "count": len(competitors), "competitors": competitors}
+
+@app.get("/api/peers/live-search")
+async def peer_live_search(city: str, area: str):
+    results = pc.live_search_competitors(city, area)
+    return {"results": results, "count": len(results)}
+
+@app.post("/api/peers/analyze")
+def peer_analyze(req: PeerAnalyzeRequest):
+    competitors = pc.get_competitors(req.city, req.area)
+    data = get_data()
+    our_stats = {}
+    if data:
+        items = _item_stats(data)
+        total_rev = sum(r["revenue"] for r in data)
+        avg_ov = total_rev / max(len(data), 1)
+        our_stats = {
+            "avg_order_value": round(avg_ov),
+            "total_revenue": round(total_rev),
+            "top_item": items[0]["name"] if items else "N/A",
+        }
+    result = pc.analyze_with_ai(our_stats, competitors, req.city, req.area or "")
+    return result
 
 # ─────────────────────────────────────────────
 # HEALTH CHECK  (used by Render & UptimeRobot)

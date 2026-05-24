@@ -9,6 +9,7 @@ import DecisionEngine from './pages/DecisionEngine'
 import CafeOS from './pages/CafeOS'
 import Chatbot from './pages/Chatbot'
 import WhatsAppNotifications from './pages/WhatsAppNotifications'
+import PeerComparison from './pages/PeerComparison'
 import { SidebarProvider } from './context/SidebarContext'
 
 function isAuthenticated(): boolean {
@@ -75,6 +76,9 @@ export default function App() {
         } />
         <Route path="/notifications" element={
           <PrivateLayout><WhatsAppNotifications /></PrivateLayout>
+        } />
+        <Route path="/peer-comparison" element={
+          <PrivateLayout><PeerComparison /></PrivateLayout>
         } />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
