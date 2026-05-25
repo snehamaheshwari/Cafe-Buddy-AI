@@ -11,8 +11,8 @@ const NAV_ITEMS = [
   { to: '/decision-engine', label: 'What To Do Next',        icon: Lightbulb,       desc: 'Action recommendations'   },
   { to: '/cafe-os',         label: 'Auto-Pilot Mode',        icon: Rocket,          desc: 'Automated operations'     },
   { to: '/chatbot',         label: 'Ask Cafe Buddy',         icon: MessageCircle,   desc: 'Chat with your AI helper' },
-  { to: '/notifications',   label: 'WhatsApp Alerts',        icon: Bell,            desc: 'Free daily summaries'     },
   { to: '/peer-comparison', label: 'Market Radar',            icon: Target,          desc: 'Benchmark vs nearby cafés' },
+  { to: '/notifications',   label: 'WhatsApp Alerts',        icon: Bell,            desc: 'Free daily summaries'     },
 ]
 
 export default function Sidebar() {
