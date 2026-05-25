@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import {
-  Search, Wifi, WifiOff, Star, TrendingUp, Users, Clock,
+  Search, Star, TrendingUp, Users, Clock,
   MapPin, Zap, RefreshCw, ChevronDown, Award, AlertTriangle, Target,
 } from 'lucide-react'
 import Header from '../components/Header'
@@ -37,12 +37,6 @@ interface RadarScores {
   menu_variety: number
   popularity: number
   value_for_money: number
-}
-
-interface LiveResult {
-  title: string
-  snippet: string
-  url: string
 }
 
 // ─────────────────────────────────────────────
@@ -417,15 +411,12 @@ function CompetitorCard({ comp }: { comp: Competitor }) {
 export default function PeerComparison() {
   const [cities, setCities] = useState<string[]>([])
   const [areas, setAreas] = useState<string[]>([])
-  const [selectedCity, setSelectedCity] = useState('Mumbai')
-  const [selectedArea, setSelectedArea] = useState('Bandra')
+  const [selectedCity, setSelectedCity] = useState('Delhi NCR')
+  const [selectedArea, setSelectedArea] = useState('Connaught Place')
   const [competitors, setCompetitors] = useState<Competitor[]>([])
   const [analysis, setAnalysis] = useState<any>(null)
-  const [liveResults, setLiveResults] = useState<LiveResult[]>([])
   const [loading, setLoading] = useState(false)
   const [analyzing, setAnalyzing] = useState(false)
-  const [liveSearching, setLiveSearching] = useState(false)
-  const [showLivePanel, setShowLivePanel] = useState(false)
 
   // ── Fetch cities on mount ──
   useEffect(() => {
@@ -462,19 +453,6 @@ export default function PeerComparison() {
       setCompetitors([])
     } finally {
       setLoading(false)
-    }
-  }
-
-  async function handleLiveSearch() {
-    setLiveSearching(true)
-    setShowLivePanel(true)
-    try {
-      const res: any = await api.peers.liveSearch(selectedCity, selectedArea)
-      setLiveResults(res.results ?? [])
-    } catch {
-      setLiveResults([])
-    } finally {
-      setLiveSearching(false)
     }
   }
 
@@ -564,17 +542,6 @@ export default function PeerComparison() {
               {loading ? 'Searching…' : 'Search Competitors'}
             </button>
 
-            {/* Live search button */}
-            <button
-              onClick={handleLiveSearch}
-              disabled={liveSearching}
-              className="flex items-center gap-2 bg-white hover:bg-slate-50 disabled:opacity-60 text-slate-700 border border-slate-200 px-4 py-2 rounded-lg text-sm font-medium transition-colors shadow-sm"
-            >
-              {liveSearching
-                ? <RefreshCw size={14} className="animate-spin text-green-500" />
-                : <Wifi size={14} className="text-green-500" />}
-              {liveSearching ? 'Searching web…' : 'Live Search'}
-            </button>
           </div>
         </div>
 
@@ -743,79 +710,6 @@ export default function PeerComparison() {
                   </div>
                 </div>
               )}
-            </div>
-          </div>
-        )}
-
-        {/* ── ROW 5: Live Search Results Panel ── */}
-        {showLivePanel && (
-          <div className="card p-6">
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-2">
-                {liveSearching
-                  ? <RefreshCw size={16} className="animate-spin text-green-500" />
-                  : liveResults.length > 0
-                  ? <Wifi size={16} className="text-green-500" />
-                  : <WifiOff size={16} className="text-slate-400" />}
-                <h2 className="text-slate-900 font-bold text-base">
-                  Live Web Results
-                </h2>
-                <span className="text-xs text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">
-                  {selectedArea}, {selectedCity}
-                </span>
-              </div>
-              <button
-                onClick={() => setShowLivePanel(false)}
-                className="text-xs text-slate-400 hover:text-slate-600 px-2 py-1 rounded"
-              >
-                Dismiss
-              </button>
-            </div>
-
-            {liveSearching && (
-              <div className="py-8 flex flex-col items-center gap-2 text-slate-400">
-                <RefreshCw size={24} className="animate-spin text-green-400" />
-                <span className="text-sm">Searching the web…</span>
-              </div>
-            )}
-
-            {!liveSearching && liveResults.length === 0 && (
-              <div className="py-6 text-center">
-                <WifiOff size={28} className="mx-auto text-slate-300 mb-2" />
-                <p className="text-slate-400 text-sm">No live results found. DuckDuckGo search may be unavailable.</p>
-              </div>
-            )}
-
-            {!liveSearching && liveResults.length > 0 && (
-              <div className="space-y-3">
-                {liveResults.map((r, i) => (
-                  <div key={i} className="bg-slate-50 border border-slate-100 rounded-lg p-4 hover:border-slate-200 transition-colors">
-                    <a
-                      href={r.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-sm font-semibold text-brand-600 hover:text-brand-700 hover:underline leading-snug"
-                    >
-                      {r.title}
-                    </a>
-                    {r.snippet && (
-                      <p className="text-xs text-slate-500 mt-1 leading-relaxed line-clamp-2">{r.snippet}</p>
-                    )}
-                    {r.url && (
-                      <p className="text-xs text-slate-300 mt-1.5 truncate">{r.url}</p>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-
-            <div className="mt-4 pt-3 border-t border-slate-100 flex items-center gap-1.5">
-              <div className="w-4 h-4 bg-orange-400 rounded-sm flex items-center justify-center flex-shrink-0">
-                <Search size={9} className="text-white" />
-              </div>
-              <p className="text-xs text-slate-400">
-                Powered by <span className="font-semibold text-orange-500">DuckDuckGo</span> — results are live from the web
-              </p>
             </div>
           </div>
         )}

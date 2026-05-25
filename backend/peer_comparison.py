@@ -279,12 +279,12 @@ COMPETITOR_DB: dict[str, dict[str, list[dict]]] = {
             },
         ],
     },
-    "Delhi": {
+    "Delhi NCR": {
         "Connaught Place": [
             {
                 "name": "Chaayos",
                 "area": "Connaught Place",
-                "city": "Delhi",
+                "city": "Delhi NCR",
                 "rating": 4.1,
                 "review_count": 7200,
                 "avg_order_value": 220,
@@ -303,7 +303,7 @@ COMPETITOR_DB: dict[str, dict[str, list[dict]]] = {
             {
                 "name": "Costa Coffee",
                 "area": "Connaught Place",
-                "city": "Delhi",
+                "city": "Delhi NCR",
                 "rating": 3.9,
                 "review_count": 3100,
                 "avg_order_value": 380,
@@ -322,7 +322,7 @@ COMPETITOR_DB: dict[str, dict[str, list[dict]]] = {
             {
                 "name": "The Piano Man Jazz Club & Café",
                 "area": "Connaught Place",
-                "city": "Delhi",
+                "city": "Delhi NCR",
                 "rating": 4.5,
                 "review_count": 2650,
                 "avg_order_value": 680,
@@ -343,7 +343,7 @@ COMPETITOR_DB: dict[str, dict[str, list[dict]]] = {
             {
                 "name": "Social",
                 "area": "Hauz Khas",
-                "city": "Delhi",
+                "city": "Delhi NCR",
                 "rating": 4.3,
                 "review_count": 8900,
                 "avg_order_value": 560,
@@ -362,7 +362,7 @@ COMPETITOR_DB: dict[str, dict[str, list[dict]]] = {
             {
                 "name": "Kunzum Travel Café",
                 "area": "Hauz Khas",
-                "city": "Delhi",
+                "city": "Delhi NCR",
                 "rating": 4.2,
                 "review_count": 1850,
                 "avg_order_value": 0,
@@ -377,6 +377,263 @@ COMPETITOR_DB: dict[str, dict[str, list[dict]]] = {
                 "notable": "Pay-what-you-wish model — niche but iconic brand in Delhi",
                 "menu_variety_score": 15,
                 "value_score": 95,
+            },
+            {
+                "name": "Imperfecto HKV",
+                "area": "Hauz Khas",
+                "city": "Delhi NCR",
+                "rating": 4.1,
+                "review_count": 5400,
+                "avg_order_value": 620,
+                "price_band": "₹₹₹",
+                "specialties": ["Mediterranean", "Cocktails", "Rooftop Dining"],
+                "positive_themes": ["rooftop views", "great cocktails", "lively atmosphere"],
+                "negative_themes": ["crowded on weekends", "noisy", "pricey drinks"],
+                "delivery_time_min": 40,
+                "platforms": ["Zomato", "Dine-in"],
+                "seating_capacity": 110,
+                "years_active": 10,
+                "notable": "Popular HKV rooftop bar-café with bohemian Mediterranean vibe",
+                "menu_variety_score": 74,
+                "value_score": 52,
+            },
+        ],
+        "Khan Market": [
+            {
+                "name": "The Big Chill Café",
+                "area": "Khan Market",
+                "city": "Delhi NCR",
+                "rating": 4.5,
+                "review_count": 9800,
+                "avg_order_value": 750,
+                "price_band": "₹₹₹",
+                "specialties": ["Pasta", "Wood-fired Pizza", "Desserts"],
+                "positive_themes": ["iconic Delhi institution", "must-try desserts", "great pasta"],
+                "negative_themes": ["long queues", "no reservations", "pricey"],
+                "delivery_time_min": 45,
+                "platforms": ["Zomato", "Swiggy", "Dine-in"],
+                "seating_capacity": 75,
+                "years_active": 22,
+                "notable": "Delhi's most iconic Italian café — cult following with legendary queues",
+                "menu_variety_score": 80,
+                "value_score": 55,
+            },
+            {
+                "name": "Amici Café",
+                "area": "Khan Market",
+                "city": "Delhi NCR",
+                "rating": 4.0,
+                "review_count": 3200,
+                "avg_order_value": 480,
+                "price_band": "₹₹",
+                "specialties": ["Italian", "Coffee", "Brunch"],
+                "positive_themes": ["reliable Italian food", "good coffee", "pleasant ambience"],
+                "negative_themes": ["average portions", "slow service on weekends"],
+                "delivery_time_min": 35,
+                "platforms": ["Zomato", "Swiggy", "Dine-in"],
+                "seating_capacity": 55,
+                "years_active": 12,
+                "notable": "Consistent neighbourhood Italian café popular with Khan Market regulars",
+                "menu_variety_score": 68,
+                "value_score": 62,
+            },
+            {
+                "name": "Costa Coffee Khan Market",
+                "area": "Khan Market",
+                "city": "Delhi NCR",
+                "rating": 3.8,
+                "review_count": 2100,
+                "avg_order_value": 380,
+                "price_band": "₹₹",
+                "specialties": ["Coffee", "Sandwiches", "Pastries"],
+                "positive_themes": ["air conditioned", "quick service", "familiar menu"],
+                "negative_themes": ["corporate feel", "overpriced", "average quality"],
+                "delivery_time_min": 25,
+                "platforms": ["Zomato", "Swiggy", "Dine-in"],
+                "seating_capacity": 60,
+                "years_active": 8,
+                "notable": "Global chain serving Khan Market's office and shopping crowd",
+                "menu_variety_score": 58,
+                "value_score": 54,
+            },
+        ],
+        "Lajpat Nagar": [
+            {
+                "name": "Café Lota",
+                "area": "Lajpat Nagar",
+                "city": "Delhi NCR",
+                "rating": 4.3,
+                "review_count": 4600,
+                "avg_order_value": 420,
+                "price_band": "₹₹",
+                "specialties": ["Indian Fusion", "Heritage Food", "Chai"],
+                "positive_themes": ["unique Indian fusion menu", "heritage setting", "great chai"],
+                "negative_themes": ["limited seating", "can get crowded", "slow service"],
+                "delivery_time_min": 30,
+                "platforms": ["Zomato", "Swiggy", "Dine-in"],
+                "seating_capacity": 50,
+                "years_active": 9,
+                "notable": "Creative Indian fusion menu with heritage craft décor — a South Delhi favourite",
+                "menu_variety_score": 72,
+                "value_score": 70,
+            },
+            {
+                "name": "Roastery Coffee House Lajpat",
+                "area": "Lajpat Nagar",
+                "city": "Delhi NCR",
+                "rating": 4.2,
+                "review_count": 2800,
+                "avg_order_value": 400,
+                "price_band": "₹₹",
+                "specialties": ["Specialty Coffee", "Brunch", "Cold Brew"],
+                "positive_themes": ["excellent specialty coffee", "cosy interior", "good brunch options"],
+                "negative_themes": ["pricey for the area", "limited parking"],
+                "delivery_time_min": 28,
+                "platforms": ["Zomato", "Swiggy", "Dine-in"],
+                "seating_capacity": 45,
+                "years_active": 5,
+                "notable": "Specialty coffee outpost bringing third-wave coffee culture to Lajpat Nagar",
+                "menu_variety_score": 63,
+                "value_score": 65,
+            },
+        ],
+        "Saket": [
+            {
+                "name": "Farzi Café",
+                "area": "Saket",
+                "city": "Delhi NCR",
+                "rating": 4.3,
+                "review_count": 6200,
+                "avg_order_value": 750,
+                "price_band": "₹₹₹",
+                "specialties": ["Modern Indian", "Cocktails", "Molecular Gastronomy"],
+                "positive_themes": ["innovative presentations", "great cocktails", "fun experience"],
+                "negative_themes": ["expensive", "small portions", "loud music"],
+                "delivery_time_min": 45,
+                "platforms": ["Zomato", "Swiggy", "Dine-in"],
+                "seating_capacity": 100,
+                "years_active": 7,
+                "notable": "Modern Indian bistro known for molecular gastronomy and creative cocktails",
+                "menu_variety_score": 82,
+                "value_score": 50,
+            },
+            {
+                "name": "Mamagoto",
+                "area": "Saket",
+                "city": "Delhi NCR",
+                "rating": 4.2,
+                "review_count": 5100,
+                "avg_order_value": 580,
+                "price_band": "₹₹",
+                "specialties": ["Pan-Asian", "Noodles", "Sushi"],
+                "positive_themes": ["flavourful Asian food", "good for groups", "vibrant décor"],
+                "negative_themes": ["crowded on weekends", "average service speed"],
+                "delivery_time_min": 38,
+                "platforms": ["Zomato", "Swiggy", "Dine-in"],
+                "seating_capacity": 85,
+                "years_active": 11,
+                "notable": "Popular Pan-Asian chain with a playful brand identity and strong delivery volumes",
+                "menu_variety_score": 78,
+                "value_score": 63,
+            },
+        ],
+        "Cyber Hub Gurugram": [
+            {
+                "name": "Molecule Air Bar",
+                "area": "Cyber Hub Gurugram",
+                "city": "Delhi NCR",
+                "rating": 4.1,
+                "review_count": 7800,
+                "avg_order_value": 800,
+                "price_band": "₹₹₹",
+                "specialties": ["Molecular Cocktails", "Fusion", "Live Music"],
+                "positive_themes": ["stunning molecular cocktails", "great ambience", "good for groups"],
+                "negative_themes": ["very expensive", "crowded on weekends", "loud"],
+                "delivery_time_min": 0,
+                "platforms": ["Dine-in"],
+                "seating_capacity": 130,
+                "years_active": 8,
+                "notable": "Cyber Hub landmark renowned for molecular mixology and premium nightlife experience",
+                "menu_variety_score": 78,
+                "value_score": 44,
+            },
+            {
+                "name": "Pirates of the Grill",
+                "area": "Cyber Hub Gurugram",
+                "city": "Delhi NCR",
+                "rating": 4.0,
+                "review_count": 9200,
+                "avg_order_value": 750,
+                "price_band": "₹₹₹",
+                "specialties": ["Grills", "BBQ", "Continental"],
+                "positive_themes": ["generous portions", "great grills", "good for corporate dinners"],
+                "negative_themes": ["pricey", "service inconsistent on busy nights", "noisy"],
+                "delivery_time_min": 50,
+                "platforms": ["Zomato", "Swiggy", "Dine-in"],
+                "seating_capacity": 150,
+                "years_active": 12,
+                "notable": "Gurugram's go-to grill restaurant for corporate teams and family gatherings",
+                "menu_variety_score": 75,
+                "value_score": 48,
+            },
+            {
+                "name": "Soi 7",
+                "area": "Cyber Hub Gurugram",
+                "city": "Delhi NCR",
+                "rating": 4.2,
+                "review_count": 6400,
+                "avg_order_value": 720,
+                "price_band": "₹₹₹",
+                "specialties": ["Thai", "Asian Fusion", "Craft Beer"],
+                "positive_themes": ["excellent craft beer selection", "authentic Thai flavours", "stylish setting"],
+                "negative_themes": ["pricey", "reservation needed on weekends", "parking can be tough"],
+                "delivery_time_min": 40,
+                "platforms": ["Zomato", "Swiggy", "Dine-in"],
+                "seating_capacity": 120,
+                "years_active": 9,
+                "notable": "Cyber Hub's top Thai-fusion pub with an impressive craft beer tap list",
+                "menu_variety_score": 80,
+                "value_score": 50,
+            },
+        ],
+        "Sector 18 Noida": [
+            {
+                "name": "The Brew Estate",
+                "area": "Sector 18 Noida",
+                "city": "Delhi NCR",
+                "rating": 4.0,
+                "review_count": 4300,
+                "avg_order_value": 650,
+                "price_band": "₹₹₹",
+                "specialties": ["Craft Beer", "Continental", "Fusion"],
+                "positive_themes": ["wide craft beer selection", "good food", "great ambience"],
+                "negative_themes": ["pricey", "crowded on weekends", "slow service at peak hours"],
+                "delivery_time_min": 40,
+                "platforms": ["Zomato", "Swiggy", "Dine-in"],
+                "seating_capacity": 110,
+                "years_active": 6,
+                "notable": "Noida's favourite craft beer destination with a strong weekend crowd",
+                "menu_variety_score": 74,
+                "value_score": 52,
+            },
+            {
+                "name": "Café Delhi Heights Noida",
+                "area": "Sector 18 Noida",
+                "city": "Delhi NCR",
+                "rating": 4.2,
+                "review_count": 5600,
+                "avg_order_value": 680,
+                "price_band": "₹₹₹",
+                "specialties": ["All-day Dining", "Continental", "Cocktails"],
+                "positive_themes": ["extensive menu", "great desserts", "reliable quality"],
+                "negative_themes": ["expensive", "crowded", "parking difficult"],
+                "delivery_time_min": 38,
+                "platforms": ["Zomato", "Swiggy", "Dine-in"],
+                "seating_capacity": 120,
+                "years_active": 10,
+                "notable": "Noida's premium all-day diner loved for consistent quality and large portions",
+                "menu_variety_score": 82,
+                "value_score": 55,
             },
         ],
     },
@@ -694,7 +951,22 @@ def analyze_with_ai(our_cafe_stats: dict, competitors: list[dict], city: str, ar
     try:
         import anthropic  # type: ignore
 
-        client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            return {
+                "analysis": (
+                    "⚠️ ANTHROPIC_API_KEY is not set.\n\n"
+                    "To fix this in Railway:\n"
+                    "1. Go to your Railway project → Cafe-Buddy-AI service\n"
+                    "2. Click **Variables** tab\n"
+                    "3. Add variable: ANTHROPIC_API_KEY = (your Anthropic API key)\n"
+                    "4. Railway will auto-redeploy with the key active.\n\n"
+                    "Your Anthropic API key can be found at console.anthropic.com"
+                ),
+                "model": "claude-opus-4-5",
+                "status": "error",
+            }
+        client = anthropic.Anthropic(api_key=api_key)
 
         # Summarise competitor data for the prompt
         comp_summary_lines: list[str] = []
@@ -780,10 +1052,10 @@ def compute_radar_scores(cafe: dict) -> dict:
     if dt == 0:
         delivery_speed = 50  # dine-in only
     else:
-        delivery_speed = max(40, 100 - (dt - 15) * 2)
+        delivery_speed = min(100, max(40, 100 - (dt - 15) * 2))
 
     # Menu variety: direct score
-    menu_variety = cafe.get("menu_variety_score", 50)
+    menu_variety = min(100, max(0, cafe.get("menu_variety_score", 50)))
 
     # Popularity: log scale from review_count, capped at 100
     review_count = cafe.get("review_count", 0)
@@ -794,7 +1066,7 @@ def compute_radar_scores(cafe: dict) -> dict:
         popularity = min(100, round(math.log10(review_count + 1) / math.log10(10001) * 100))
 
     # Value for money: direct score
-    value_for_money = cafe.get("value_score", 50)
+    value_for_money = min(100, max(0, cafe.get("value_score", 50)))
 
     return {
         "rating":               rating_score,
