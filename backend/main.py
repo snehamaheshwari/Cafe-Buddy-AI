@@ -1236,88 +1236,89 @@ def reject_decision(decision_id: int):
     return {"success": True, "message": f"Decision #{decision_id} rejected."}
 
 # ─────────────────────────────────────────────
-# LAYER 5 — AUTONOMOUS CAFÉ OS
+# LAYER 5 — AUTONOMOUS CAFÉ OS  (XGBoost-powered)
 # ─────────────────────────────────────────────
+
+import cafe_os_models as _cos
 
 @app.get("/api/layer5/autonomous-actions")
 def autonomous_actions():
-    data    = get_data()
-    decisions = _generate_decisions(data)
-    total_rev = sum(r["revenue"] for r in data)
-
-    if not data:
+    """
+    Return real XGBoost-driven autonomous actions.
+    Uses demand_forecast_model, item_popularity_model and price_optimisation_table.
+    Falls back gracefully if models are unavailable.
+    """
+    pos_data = get_data()
+    try:
+        result = _cos.autonomous_actions_from_models(pos_data)
+        return result
+    except Exception as exc:
+        # Graceful fallback when model files are missing (e.g. first deploy)
         return {
-            "actions": [],
+            "actions": [{
+                "id": 1, "type": "alert",
+                "title": "Auto-Pilot models initialising…",
+                "detail": f"XGBoost models are loading. ({exc})",
+                "executed_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "impact": "Ready once models are loaded", "status": "alert",
+                "trigger": "System",
+            }],
             "system_health": {
-                "models_active": 0,
-                "decisions_automated_today": 0,
-                "revenue_impact_today": 0,
-                "alerts_fired": 0,
-                "uptime": "99.8%",
+                "models_active": 0, "decisions_automated_today": 0,
+                "revenue_impact_today": 0, "alerts_fired": 1, "uptime": "99.9%",
             },
         }
-
-    items    = _item_stats(data)
-    top_item = items[0]["name"] if items else "Top Item"
-    plats    = _platform_breakdown(data)
-    top_plat = max(plats, key=lambda x: x["revenue"])["platform"] if plats else "Dine-in"
-
-    actions = []
-    aid = 1
-
-    if items:
-        actions.append({
-            "id": aid, "type": "auto_executed",
-            "title": f"Price optimisation analysis run for '{top_item}'",
-            "detail": "Price optimisation model analysed demand velocity and margin elasticity.",
-            "executed_at": (datetime.now() - timedelta(hours=2)).strftime("%Y-%m-%d %H:%M"),
-            "impact": "See Decision Engine for recommendation", "status": "completed",
-            "trigger": "Price Optimization Model",
-        })
-        aid += 1
-
-    if plats:
-        actions.append({
-            "id": aid, "type": "scheduled",
-            "title": f"Promo push recommendation generated for {top_plat}",
-            "detail": f"{top_plat} identified as top revenue channel. Promo strategy available in Decision Engine.",
-            "executed_at": (datetime.now() + timedelta(hours=4)).strftime("%Y-%m-%d %H:%M"),
-            "impact": "See Decision Engine for impact", "status": "scheduled",
-            "trigger": "Time-based + Demand Model",
-        })
-        aid += 1
-
-    # Weekend staffing check
-    weekend_rev_list = [r["revenue"] for r in data
-                        if datetime.strptime(r["date"], "%Y-%m-%d").weekday() >= 5]
-    weekday_rev_list = [r["revenue"] for r in data
-                        if datetime.strptime(r["date"], "%Y-%m-%d").weekday() < 5]
-    if weekend_rev_list and weekday_rev_list:
-        actions.append({
-            "id": aid, "type": "scheduled",
-            "title": "Weekend demand surge detected — staffing review flagged",
-            "detail": "Demand forecast model identified weekend vs weekday revenue differential.",
-            "executed_at": (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d %H:%M"),
-            "impact": "See Decision Engine for staffing recommendation", "status": "scheduled",
-            "trigger": "Demand Forecast Model",
-        })
-        aid += 1
-
-    return {
-        "actions": actions,
-        "system_health": {
-            "models_active": (1 if data else 0) + (1 if get_sentiment_engine().has_data else 0),
-            "decisions_automated_today": len(decisions),
-            "revenue_impact_today": int(total_rev / max(len(set(r["date"] for r in data)), 1)),
-            "alerts_fired": len([d for d in decisions if d.get("priority") == "critical"]),
-            "uptime": "99.8%",
-        },
-    }
 
 
 @app.get("/api/layer5/kpis")
 def kpis():
     return {"kpis": _calc_kpis(get_data())}
+
+
+@app.get("/api/layer5/demand-forecast")
+def layer5_demand_forecast(location: str, daypart: str, category: str,
+                            is_weekend: int = 0):
+    """Predict revenue for a (location, daypart, category) bucket."""
+    try:
+        return _cos.predict_demand(location, daypart, category, is_weekend)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@app.get("/api/layer5/item-popularity")
+def layer5_item_popularity(item_name: str, category: str, daypart: str):
+    """Predict units sold for an (item, daypart) combination."""
+    try:
+        return _cos.predict_item_popularity(item_name, category, daypart)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@app.get("/api/layer5/price-recommendations")
+def layer5_price_recommendations():
+    """Return per-item price-change recommendations from the optimisation table."""
+    return {"recommendations": _cos.get_price_recommendations()}
+
+
+@app.get("/api/layer5/model-values")
+def layer5_model_values():
+    """Return known label-encoder classes (locations, dayparts, categories, items)."""
+    return _cos.get_known_values()
+
+
+@app.get("/api/layer5/model-status")
+def layer5_model_status():
+    """Health check: which model files are present on disk."""
+    import data_store as ds
+    return {
+        "models": _cos.model_status(),
+        "data_dir": ds._DATA_DIR,
+        "data_files": (
+            [f for f in os.listdir(ds._DATA_DIR) if f.endswith(".json")]
+            if os.path.exists(ds._DATA_DIR) else []
+        ),
+        "volume_hint": f"Mount Railway volume at: {ds._DATA_DIR}",
+    }
 
 
 # ─────────────────────────────────────────────

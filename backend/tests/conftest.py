@@ -33,8 +33,9 @@ def _make_pos_row(date: str, item: str = "Cappuccino", qty: float = 2.0,
 
 @pytest.fixture
 def pos_data_7days():
-    """7 days of POS data with 3 items per day — weekends included."""
-    base = datetime(2026, 5, 11)  # Monday
+    """7 days of POS data with 3 items per day — always recent (relative to today)."""
+    today = datetime.now()
+    # Start from 6 days ago so data spans today-6 through today
     rows = []
     items = [
         ("Cappuccino",    "Beverage", 120.0, 35.0),
@@ -42,8 +43,8 @@ def pos_data_7days():
         ("Garlic Bread",  "Starter",   80.0,  25.0),
     ]
     for i in range(7):
-        d = (base + timedelta(days=i)).strftime("%Y-%m-%d")
-        is_we = i >= 5
+        d = (today - timedelta(days=6 - i)).strftime("%Y-%m-%d")
+        is_we = (today - timedelta(days=6 - i)).weekday() >= 5
         for item, cat, price, cost in items:
             qty = 10.0 if is_we else 7.0
             rows.append(_make_pos_row(
@@ -58,7 +59,7 @@ def pos_data_7days():
 @pytest.fixture
 def pos_data_30days():
     """30 days of POS data — weekends ~20% higher (realistic café pattern)."""
-    base = datetime(2026, 4, 18)
+    base = datetime.now() - timedelta(days=29)
     rows = []
     items = [
         ("Cappuccino",    "Beverage", 120.0, 35.0),

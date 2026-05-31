@@ -1,0 +1,41 @@
+{
+  "project": "CafeBuddy Autonomous Cafe OS",
+  "trained_on": "CafeBuddy item-level sales data (combined ~100,000 line items)",
+  "algorithm": "XGBoost",
+  "models": {
+    "demand_forecast_model.pkl": {
+      "task": "regression - predict revenue per location/daypart/category",
+      "metrics": {
+        "mae": 2884.4191771892793,
+        "r2": 0.9177051161065182,
+        "features": [
+          "Cafe Location_enc",
+          "Daypart_enc",
+          "Category_enc",
+          "is_weekend"
+        ]
+      }
+    },
+    "item_popularity_model.pkl": {
+      "task": "regression - predict units sold per item/daypart",
+      "metrics": {
+        "mae": 33.66875076293945,
+        "r2": 0.8798180818557739,
+        "features": [
+          "Item Name_enc",
+          "Category_enc",
+          "Daypart_enc"
+        ]
+      }
+    },
+    "price_optimisation_table.csv": {
+      "task": "rules-based price recommendation per item",
+      "metrics": {
+        "items_priced": 71,
+        "price_rises": 18,
+        "price_cuts": 10
+      }
+    }
+  },
+  "how_to_use": "Load a .pkl with joblib.load(). Each holds {'model','features','encoders'}. Encode inputs with the saved LabelEncoders, then call model.predict(). price_optimisation_table.csv opens directly in Excel. Full findings in reports/CafeBuddy_Insights_Report.txt."
+}

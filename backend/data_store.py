@@ -11,7 +11,12 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 # ─── Persistence helpers ─────────────────────────────────────────────────────
-_DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
+# DATA_DIR env var lets Railway volume path be overridden if needed.
+# Default: <backend-dir>/data  →  /app/backend/data inside Docker.
+# Railway volume must be mounted at the same path shown in startup logs.
+_DATA_DIR = os.environ.get("DATA_DIR",
+                            os.path.join(os.path.dirname(__file__), "data"))
+print(f"[data_store] DATA_DIR = {_DATA_DIR}", flush=True)
 
 
 def save_dataset(name: str, data: list, info: dict) -> None:
@@ -116,7 +121,7 @@ _MOCK_SALES: list = _make_mock()
 def item_stats(data: list) -> list:
     agg: dict = defaultdict(lambda: {"qty": 0.0, "revenue": 0.0, "cost": 0.0})
     for r in data:
-        agg[r["item_name"]]["qty"]     += r["quantity"]
+        agg[r["item_name"]]["qty"]     += r.get("quantity", r.get("qty", 1))
         agg[r["item_name"]]["revenue"] += r["revenue"]
         agg[r["item_name"]]["cost"]    += r["cost"]
     out = []
