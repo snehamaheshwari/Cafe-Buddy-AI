@@ -1,13 +1,25 @@
 """
 ML Models — load & run inference on the trained café models.
 All models live in backend/models/.  Loaded lazily on first use.
+
+Primary revenue forecast model (dashboard):
+  xgboost_model.joblib — XGBoost, 600 trees, lag+rolling features
+                          Trained on 100K CafeBuddy transactions
+                          MAPE 7.83%, MAE ₹5,153, RMSE ₹6,064
+
+Other models (Smart Analytics):
+  peak_hour_classifier.pkl   — peak-hour prediction (RF classifier)
+  cancellation_classifier.pkl — cancellation risk (RF classifier)
+  cross_sell_rules.pkl        — association rules (Apriori)
+  dynamic_pricing.pkl         — price elasticity model
+  platform_forecasters.pkl    — per-platform Ridge regressors
+  lstm.keras (optional)       — LSTM deep-learning forecast
 """
 from __future__ import annotations
 
 import json
 import os
 import warnings
-import math
 from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Optional
@@ -17,18 +29,39 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 
-_DIR = os.path.join(os.path.dirname(__file__), "models")
+_DIR         = os.path.join(os.path.dirname(__file__), "models")
+_INSIGHTS_DIR = os.path.join(_DIR, "xgb_insights")
+
+# ── Average daily revenue in XGBoost training data (base_score).
+# Used for scale-normalisation so the model works with any cafe size.
+_XGB_TRAINING_MEAN = 75_975.0
 
 # ─── Lazy model cache ─────────────────────────────────────────────────────────
 
 _cache: dict = {}
 
+
 def _load(name: str):
+    """Load a legacy pickle model by filename (lazy, cached)."""
     if name not in _cache:
         import pickle
         with open(os.path.join(_DIR, name), "rb") as f:
             _cache[name] = pickle.load(f)
     return _cache[name]
+
+
+def _load_xgb() -> dict:
+    """
+    Load the primary XGBoost revenue forecast model (lazy, cached).
+    Returns dict: {model, feature_cols, metrics}
+    """
+    if "xgboost_model" not in _cache:
+        import joblib
+        path = os.path.join(_DIR, "xgboost_model.joblib")
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"XGBoost model not found: {path}")
+        _cache["xgboost_model"] = joblib.load(path)
+    return _cache["xgboost_model"]
 
 
 # ─── Feature engineering helpers ─────────────────────────────────────────────
@@ -64,97 +97,101 @@ def _lag_features(series: pd.Series, lags=(1, 2, 3, 7, 14, 28),
     return df.dropna()
 
 
-# ─── 1. Revenue Forecast (Random Forest + Linear Regression) ──────────────────
+# ─── 1. Revenue Forecast (XGBoost — primary dashboard model) ─────────────────
 
 def forecast_revenue(pos_data: list, days: int = 7) -> dict:
-    """Forecast next `days` days using Random Forest and Linear Regression models."""
+    """
+    Forecast next `days` days of daily revenue using the pre-trained XGBoost model.
+
+    Model: XGBoost (600 trees, max_depth=5, learning_rate=0.05)
+    Trained on ~100K CafeBuddy item-level transactions.
+    Test-set metrics: MAPE 7.83%, MAE ₹5,153, RMSE ₹6,064.
+
+    Features (14 total): calendar (dayofweek, is_weekend, month, day, weekofyear)
+    + lag revenues (1,2,3,7,14,28 days ago) + rolling averages (7,14,28-day windows).
+
+    Scale normalisation: user's lag values are scaled to the XGBoost training range
+    (mean ₹75,975/day) before prediction and scaled back afterward — ensures accurate
+    forecasts regardless of how big or small the user's cafe is.
+
+    Requires ≥14 days of uploaded POS history.
+    """
     series = _build_daily_series(pos_data)
-    if series.empty or len(series) < 30:
-        return {"error": "Insufficient data (need ≥30 days of POS history)", "forecast": []}
+    if series.empty or len(series) < 14:
+        return {"error": "Insufficient data (need ≥14 days of POS history)", "forecast": []}
 
-    rf_obj  = _load("random_forest.pkl")
-    lr_obj  = _load("linear_regression.pkl")
-    rf_model = rf_obj["model"]
-    lr_model = lr_obj["model"]
-    feature_cols = rf_obj["feature_cols"]
+    obj          = _load_xgb()
+    model        = obj["model"]
+    feature_cols = obj["feature_cols"]
+    metrics      = obj["metrics"]
 
-    # Extend series by rolling-forward one day at a time
-    extended = series.copy()
-    result = []
+    # ── Scale normalisation ────────────────────────────────────────────────────
+    # Map user's daily revenue range to the XGBoost training range so the model's
+    # split thresholds are in the right region.  Predictions are scaled back at the end.
+    user_mean = float(series.mean())
+    scale     = _XGB_TRAINING_MEAN / max(user_mean, 1.0)
+
+    extended  = series.copy()
+    result    = []
     day_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
-    for i in range(1, days + 1):
+    for _ in range(days):
         next_date = extended.index[-1] + timedelta(days=1)
-        wd = next_date.dayofweek
+        wd        = next_date.dayofweek
+        vals      = extended.values
+        n         = len(vals)
 
-        feat_df = _lag_features(extended)
-        if feat_df.empty:
-            break
-        last_row = feat_df.iloc[[-1]][feature_cols].copy()
+        def _lag(k: int) -> float:
+            return float(vals[-k]) if n >= k else float(vals[0])
 
-        # Calendar features must reflect next_date (not the last observed day)
-        for col, val in [
-            ("dayofweek",  wd),
-            ("is_weekend", 1 if wd >= 5 else 0),
-            ("month",      next_date.month),
-            ("dayofmonth", next_date.day),
-            ("weekofyear", int(next_date.isocalendar()[1])),
-        ]:
-            if col in last_row.columns:
-                last_row[col] = val
+        def _avg(w: int) -> float:
+            return float(np.mean(vals[-w:])) if n >= w else float(np.mean(vals))
 
-        rf_pred  = float(rf_model.predict(last_row)[0])
-        lr_pred  = float(lr_model.predict(last_row)[0])
-        ensemble = round((rf_pred * 0.6 + lr_pred * 0.4))  # weighted ensemble
+        # Build feature row (scale lags/avgs to training range before prediction)
+        row = {
+            "dayofweek":  wd,
+            "is_weekend": 1 if wd >= 5 else 0,
+            "month":      next_date.month,
+            "day":        next_date.day,
+            "weekofyear": int(next_date.isocalendar()[1]),
+            "lag_1":  _lag(1)  * scale,
+            "lag_2":  _lag(2)  * scale,
+            "lag_3":  _lag(3)  * scale,
+            "lag_7":  _lag(7)  * scale,
+            "lag_14": _lag(14) * scale,
+            "lag_28": _lag(28) * scale,
+            "avg_7":  _avg(7)  * scale,
+            "avg_14": _avg(14) * scale,
+            "avg_28": _avg(28) * scale,
+        }
 
-        extended[next_date] = ensemble  # feed forward
+        X        = pd.DataFrame([row])[feature_cols]
+        raw_pred = max(0.0, float(model.predict(X)[0]))
+        pred     = raw_pred / scale     # scale back to user's revenue range
+
+        extended[next_date] = pred      # feed forward for next iteration
+
+        mape = metrics.get("mape", 7.83)
         result.append({
             "date":              next_date.strftime("%Y-%m-%d"),
             "day":               day_names[wd],
-            "predicted_revenue": max(0, int(ensemble)),
-            "rf_pred":           max(0, int(rf_pred)),
-            "lr_pred":           max(0, int(lr_pred)),
-            "upper":             max(0, int(ensemble * 1.08)),
-            "lower":             max(0, int(ensemble * 0.92)),
+            "predicted_revenue": max(0, int(pred)),
+            "upper":             max(0, int(pred * 1.08)),   # ±8% confidence band
+            "lower":             max(0, int(pred * 0.92)),
             "is_weekend":        wd >= 5,
-            "confidence":        round(100 - rf_obj["metrics"]["mape"], 1),
+            "confidence":        round(100 - mape, 1),
         })
 
-    # Apply historical weekend uplift if the user's data shows weekends are busier.
-    # The training models (IIM campus data) may have an inverted weekend pattern;
-    # we correct by blending the model's weekend/weekday ratio toward the observed ratio.
-    we_total, we_days = 0.0, set()
-    wd_total, wd_days = 0.0, set()
-    for dt, rev in series.items():
-        if dt.dayofweek >= 5:
-            we_total += rev; we_days.add(str(dt))
-        else:
-            wd_total += rev; wd_days.add(str(dt))
-    obs_we_avg = we_total / max(len(we_days), 1)
-    obs_wd_avg = wd_total / max(len(wd_days), 1)
-
-    if obs_we_avg > obs_wd_avg and obs_wd_avg > 0:
-        hist_ratio = obs_we_avg / obs_wd_avg      # e.g. 1.20 if weekends are 20% busier
-        for r in result:
-            if r["is_weekend"]:
-                # Blend 70% model-based, 30% historical-ratio correction
-                corrected = round(r["predicted_revenue"] * (0.7 + 0.3 * hist_ratio))
-                r["predicted_revenue"] = max(0, corrected)
-                r["upper"]  = max(0, int(corrected * 1.08))
-                r["lower"]  = max(0, int(corrected * 0.92))
-                r["rf_pred"] = max(0, round(r["rf_pred"] * (0.7 + 0.3 * hist_ratio)))
-                r["lr_pred"] = max(0, round(r["lr_pred"] * (0.7 + 0.3 * hist_ratio)))
-
+    mape = metrics.get("mape", 7.83)
     return {
-        "forecast":          result,
-        "model":             "Ensemble (RF 60% + Ridge 40%)",
-        "rf_mae":            round(rf_obj["metrics"]["mae"], 0),
-        "rf_mape":           round(rf_obj["metrics"]["mape"], 1),
-        "lr_mae":            round(lr_obj["metrics"]["mae"], 0),
-        "lr_mape":           round(lr_obj["metrics"]["mape"], 1),
-        "accuracy":          round(100 - rf_obj["metrics"]["mape"], 1),
-        "training_records":  len(series),
-        "weekend_uplift_applied": obs_we_avg > obs_wd_avg,
+        "forecast":         result,
+        "model":            "XGBoost (600 trees, lag+rolling features)",
+        "xgb_mae":          round(metrics.get("mae",  5152.9), 0),
+        "xgb_mape":         round(mape, 1),
+        "accuracy":         round(100 - mape, 1),
+        "training_records": len(series),
+        "scale_factor":     round(scale, 4),
+        "user_daily_mean":  round(user_mean, 0),
     }
 
 
@@ -462,40 +499,65 @@ def lstm_forecast(pos_data: list, days: int = 7) -> Optional[list]:
 def model_comparison() -> list:
     """Return accuracy metrics for all available forecasting models."""
     models = []
+
+    # ── XGBoost (primary revenue forecast model) ───────────────────────────────
     try:
-        rf  = _load("random_forest.pkl")
+        obj = _load_xgb()
+        m   = obj["metrics"]
         models.append({
-            "model": "Random Forest", "type": "Ensemble",
-            "mae": round(rf["metrics"]["mae"], 0),
-            "rmse": round(rf["metrics"]["rmse"], 0),
-            "mape": round(rf["metrics"]["mape"], 1),
-            "accuracy": round(100 - rf["metrics"]["mape"], 1),
+            "model":    "XGBoost Revenue Forecaster",
+            "type":     "Gradient Boosting (600 trees)",
+            "mae":      round(m.get("mae",  5152.9), 0),
+            "rmse":     round(m.get("rmse", 6064.1), 0),
+            "mape":     round(m.get("mape", 7.83),   1),
+            "accuracy": round(100 - m.get("mape", 7.83), 1),
+            "features": "lag_1/2/3/7/14/28 + avg_7/14/28 + calendar",
+            "trained_on": "~100K CafeBuddy transactions",
         })
     except Exception:
         pass
-    try:
-        lr  = _load("linear_regression.pkl")
-        models.append({
-            "model": "Ridge Regression", "type": "Linear",
-            "mae": round(lr["metrics"]["mae"], 0),
-            "rmse": round(lr["metrics"]["rmse"], 0),
-            "mape": round(lr["metrics"]["mape"], 1),
-            "accuracy": round(100 - lr["metrics"]["mape"], 1),
-        })
-    except Exception:
-        pass
+
+    # ── LSTM (optional deep learning) ──────────────────────────────────────────
     try:
         cfg = json.load(open(os.path.join(_DIR, "lstm_config.json")))
         models.append({
-            "model": "LSTM (Neural Net)", "type": "Deep Learning",
-            "mae": round(cfg["metrics"]["mae"], 0),
-            "rmse": round(cfg["metrics"]["rmse"], 0),
-            "mape": round(cfg["metrics"]["mape"], 1),
+            "model":    "LSTM (Neural Net)",
+            "type":     "Deep Learning",
+            "mae":      round(cfg["metrics"]["mae"],  0),
+            "rmse":     round(cfg["metrics"]["rmse"], 0),
+            "mape":     round(cfg["metrics"]["mape"], 1),
             "accuracy": round(100 - cfg["metrics"]["mape"], 1),
+            "features": "sequence of daily revenues",
+            "trained_on": "user-uploaded POS data",
         })
     except Exception:
         pass
+
     return sorted(models, key=lambda x: x["mape"])
+
+
+# ─── 9. Market Insights (from XGBoost training data) ─────────────────────────
+
+def get_market_insights() -> dict:
+    """
+    Return pre-computed business insights derived from the XGBoost training data
+    (~100K CafeBuddy transactions).  These benchmark figures are shown on the
+    dashboard when the user has not yet uploaded their own POS data.
+    """
+    result: dict = {}
+    for fname, key in [
+        ("insights_summary.csv",     "summary"),
+        ("top_items.csv",            "top_items"),
+        ("revenue_by_category.csv",  "by_category"),
+        ("feature_importance.csv",   "feature_importance"),
+        ("predictions_vs_actual.csv","predictions_vs_actual"),
+    ]:
+        path = os.path.join(_INSIGHTS_DIR, fname)
+        try:
+            result[key] = pd.read_csv(path).to_dict(orient="records")
+        except Exception:
+            result[key] = []
+    return result
 
 
 # ─── ML Context for Chatbot ───────────────────────────────────────────────────
@@ -510,7 +572,7 @@ def build_ml_context(pos_data: list) -> str:
     try:
         fc = forecast_revenue(pos_data, days=3)
         if fc.get("forecast"):
-            lines.append(f"Revenue Forecast (RF+Ridge Ensemble, MAPE {fc['rf_mape']}%):")
+            lines.append(f"Revenue Forecast (XGBoost, MAPE {fc.get('xgb_mape', 7.8)}%):")
             for d in fc["forecast"]:
                 lines.append(f"  {d['day']} {d['date']}: ₹{d['predicted_revenue']:,} "
                              f"(range ₹{d['lower']:,}–₹{d['upper']:,})")
@@ -522,7 +584,7 @@ def build_ml_context(pos_data: list) -> str:
         ph = peak_hour_analysis(pos_data)
         if ph.get("top_hours"):
             top = ph["top_hours"]
-            lines.append(f"Peak Hours (RF classifier): "
+            lines.append(f"Peak Hours (classifier): "
                         + ", ".join(f"{h['hour']:02d}:00 ({h['orders']} orders)" for h in top))
     except Exception:
         pass

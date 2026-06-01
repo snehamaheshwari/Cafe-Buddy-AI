@@ -961,9 +961,9 @@ def forecast():
     data   = get_data()
     n_days = len(set(r["date"] for r in data))
 
-    # Try ML ensemble (RF + Ridge) first; fall back to weekday-average heuristic
+    # Try XGBoost first (needs ≥14 days); fall back to weekday-average heuristic
     ml_result = None
-    if data_store._pos_data and len(set(r["date"] for r in data_store._pos_data)) >= 30:
+    if data_store._pos_data and len(set(r["date"] for r in data_store._pos_data)) >= 14:
         try:
             ml_result = ml_models.forecast_revenue(data_store._pos_data, 7)
         except Exception:
@@ -974,22 +974,36 @@ def forecast():
             "forecast":         ml_result["forecast"],
             "model":            ml_result["model"],
             "accuracy":         ml_result["accuracy"],
-            "last_trained":     "From uploaded POS data",
+            "last_trained":     "XGBoost model (pre-trained on 100K CafeBuddy transactions)",
             "training_records": len(data),
             "data_days":        n_days,
-            "rf_mae":           ml_result.get("rf_mae"),
-            "lr_mae":           ml_result.get("lr_mae"),
+            "xgb_mae":          ml_result.get("xgb_mae"),
+            "xgb_mape":         ml_result.get("xgb_mape"),
+            "scale_factor":     ml_result.get("scale_factor"),
+            "user_daily_mean":  ml_result.get("user_daily_mean"),
         }
     # Fallback
     result = _weekday_forecast(data, 7)
     return {
         "forecast":        result,
-        "model":           "Weekday Average Heuristic",
+        "model":           "Weekday Average Heuristic (upload ≥14 days POS data for XGBoost)",
         "accuracy":        round(min(85, 55 + min(28, n_days // 7)), 1),
         "last_trained":    "Computed from daily averages",
         "training_records": len(data),
         "data_days":       n_days,
     }
+
+
+@app.get("/api/layer3/market-insights")
+def market_insights():
+    """
+    Pre-computed business insights from XGBoost training data (~100K transactions).
+    Benchmark figures for dashboard when user has no POS data yet.
+    """
+    try:
+        return ml_models.get_market_insights()
+    except Exception as exc:
+        return {"error": str(exc), "summary": [], "top_items": [], "by_category": []}
 
 
 @app.get("/api/layer3/recommendations")
