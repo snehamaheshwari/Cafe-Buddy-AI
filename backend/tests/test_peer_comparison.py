@@ -365,7 +365,7 @@ class TestCitiesAndDb:
                     )
 
     def test_all_competitors_have_valid_price_band(self):
-        valid_bands = {"₹", "₹₹", "₹₹₹"}
+        valid_bands = {"₹", "₹₹", "₹₹₹", "₹₹₹₹"}  # ₹₹₹₹ added for premium venues
         for city, areas in COMPETITOR_DB.items():
             for area, comps in areas.items():
                 for comp in comps:
@@ -374,3 +374,159 @@ class TestCitiesAndDb:
                         f"Invalid price_band '{band}' for '{comp['name']}' "
                         f"in {area}, {city}"
                     )
+
+
+# =============================================================================
+# TestSector120NoidaAreas — new areas added around Central Market Sector 120
+# =============================================================================
+
+class TestSector120NoidaAreas:
+    """Verify all new Sector 120 Noida competitor data is correctly structured."""
+
+    NEW_AREAS = [
+        "Sector 120 Noida",
+        "Sector 121 Noida",
+        "Sector 122 Noida",
+        "Gaur City Noida",
+        "Noida Expressway",
+    ]
+
+    REQUIRED_CAFES = {
+        "Sector 120 Noida":   ["Cafe Ciro", "Third Wave Coffee — Sector 119"],
+        "Sector 121 Noida":   ["Yuvan Cafe & Restro", "The Daily Grind Cafe"],
+        "Sector 122 Noida":   ["Vintage Cottage Cafe", "Ka Kha Ga — The Boutique Cafe",
+                               "ATHOSC Cafe & Restaurant", "Saffron Stories"],
+        "Gaur City Noida":    ["Black Club + Cafe", "The Food Stories"],
+        "Noida Expressway":   ["Say Fontina", "Dios — The Neighbourhood Bistro",
+                               "Spezia Bistro", "Osteria — Authentic Italian Pizzeria"],
+    }
+
+    def test_all_new_areas_present_in_delhi_ncr(self):
+        areas = get_areas("Delhi NCR")
+        for area in self.NEW_AREAS:
+            assert area in areas, f"New area '{area}' missing from Delhi NCR"
+
+    def test_all_new_areas_have_competitors(self):
+        for area in self.NEW_AREAS:
+            comps = get_competitors("Delhi NCR", area)
+            assert len(comps) >= 2, \
+                f"Area '{area}' should have ≥2 competitors, got {len(comps)}"
+
+    def test_specific_cafes_present_in_each_area(self):
+        for area, expected_names in self.REQUIRED_CAFES.items():
+            comps = get_competitors("Delhi NCR", area)
+            actual_names = [c["name"] for c in comps]
+            for name in expected_names:
+                assert name in actual_names, \
+                    f"'{name}' missing from '{area}'. Found: {actual_names}"
+
+    def test_sector_120_cafe_ciro_has_correct_rating(self):
+        comps = get_competitors("Delhi NCR", "Sector 120 Noida")
+        ciro = next((c for c in comps if c["name"] == "Cafe Ciro"), None)
+        assert ciro is not None, "Cafe Ciro not found in Sector 120 Noida"
+        assert ciro["rating"] == 4.4
+        assert ciro["review_count"] == 1531
+
+    def test_third_wave_coffee_is_highest_rated_in_sector_120(self):
+        comps = get_competitors("Delhi NCR", "Sector 120 Noida")
+        ratings = {c["name"]: c["rating"] for c in comps}
+        assert ratings.get("Third Wave Coffee — Sector 119") == 4.8
+        assert max(ratings.values()) == 4.8
+
+    def test_say_fontina_on_expressway_has_correct_data(self):
+        comps = get_competitors("Delhi NCR", "Noida Expressway")
+        fontina = next((c for c in comps if c["name"] == "Say Fontina"), None)
+        assert fontina is not None
+        assert fontina["rating"] == 4.7
+        assert fontina["review_count"] == 2021
+        assert "Wood-fired Pizza (Burrata, Truffle Mushroom)" in fontina["specialties"]
+
+    def test_athosc_in_sector_122_highest_rated(self):
+        comps = get_competitors("Delhi NCR", "Sector 122 Noida")
+        ratings = {c["name"]: c["rating"] for c in comps}
+        # ATHOSC (4.8) and Saffron Stories (4.8) tied for top
+        assert ratings.get("ATHOSC Cafe & Restaurant") == 4.8
+        assert ratings.get("Saffron Stories") == 4.8
+
+    def test_all_new_cafes_have_required_fields(self):
+        required = ["name", "area", "city", "rating", "review_count",
+                    "avg_order_value", "price_band", "specialties",
+                    "positive_themes", "negative_themes", "delivery_time_min",
+                    "platforms", "seating_capacity", "years_active",
+                    "notable", "menu_variety_score", "value_score"]
+        for area in self.NEW_AREAS:
+            comps = get_competitors("Delhi NCR", area)
+            for comp in comps:
+                for field in required:
+                    assert field in comp, \
+                        f"Field '{field}' missing from '{comp.get('name','?')}' in '{area}'"
+
+    def test_all_new_cafes_have_valid_ratings(self):
+        for area in self.NEW_AREAS:
+            comps = get_competitors("Delhi NCR", area)
+            for comp in comps:
+                r = comp["rating"]
+                assert 0 < r <= 5, \
+                    f"Rating {r} invalid for '{comp['name']}' in '{area}'"
+
+    def test_all_new_cafes_have_zomato_or_swiggy(self):
+        for area in self.NEW_AREAS:
+            comps = get_competitors("Delhi NCR", area)
+            for comp in comps:
+                platforms = comp.get("platforms", [])
+                assert any(p in platforms for p in ["Zomato", "Swiggy"]), \
+                    f"'{comp['name']}' in '{area}' must have Zomato or Swiggy"
+
+    def test_radar_scores_for_new_cafes_all_bounded(self):
+        for area in self.NEW_AREAS:
+            comps = get_competitors("Delhi NCR", area)
+            for comp in comps:
+                scores = compute_radar_scores(comp)
+                for key, val in scores.items():
+                    assert 0 <= val <= 100, \
+                        f"Radar score '{key}'={val} out of [0,100] for '{comp['name']}'"
+
+    def test_noida_expressway_has_most_expensive_cafes(self):
+        """Premium venues on Expressway should have higher avg_order_value."""
+        expressway = get_competitors("Delhi NCR", "Noida Expressway")
+        sector_120 = get_competitors("Delhi NCR", "Sector 120 Noida")
+        exp_avg = sum(c["avg_order_value"] for c in expressway) / len(expressway)
+        s120_avg = sum(c["avg_order_value"] for c in sector_120) / len(sector_120)
+        assert exp_avg > s120_avg, \
+            f"Expressway avg ₹{exp_avg:.0f} should be > Sector 120 avg ₹{s120_avg:.0f}"
+
+    def test_spezia_bistro_has_four_rupee_price_band(self):
+        comps = get_competitors("Delhi NCR", "Noida Expressway")
+        spezia = next((c for c in comps if c["name"] == "Spezia Bistro"), None)
+        assert spezia is not None
+        assert spezia["price_band"] == "₹₹₹₹"
+
+    def test_black_club_gaur_city_review_count(self):
+        comps = get_competitors("Delhi NCR", "Gaur City Noida")
+        black = next((c for c in comps if c["name"] == "Black Club + Cafe"), None)
+        assert black is not None
+        assert black["review_count"] == 5016  # verified from Zomato
+
+    def test_vintage_cottage_cafe_is_italian_continental(self):
+        comps = get_competitors("Delhi NCR", "Sector 122 Noida")
+        vintage = next((c for c in comps if c["name"] == "Vintage Cottage Cafe"), None)
+        assert vintage is not None
+        specs = [s.lower() for s in vintage["specialties"]]
+        assert any("pizza" in s or "pasta" in s for s in specs), \
+            "Vintage Cottage should have pizza or pasta in specialties"
+
+    def test_total_delhi_ncr_areas_increased(self):
+        """Delhi NCR should now have more areas than the original 7."""
+        areas = get_areas("Delhi NCR")
+        original_areas = {
+            "Connaught Place", "Hauz Khas", "Khan Market",
+            "Lajpat Nagar", "Saket", "Cyber Hub Gurugram", "Sector 18 Noida"
+        }
+        new_areas = {
+            "Sector 120 Noida", "Sector 121 Noida", "Sector 122 Noida",
+            "Gaur City Noida", "Noida Expressway"
+        }
+        all_expected = original_areas | new_areas
+        for expected in all_expected:
+            assert expected in areas, f"Expected area '{expected}' not found in Delhi NCR"
+        assert len(areas) >= 12, f"Expected ≥12 areas in Delhi NCR, got {len(areas)}"
