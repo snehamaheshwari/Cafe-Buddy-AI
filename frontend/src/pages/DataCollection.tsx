@@ -39,7 +39,7 @@ const DATASET_CONFIG = {
     ],
     required_fields: [
       { name: 'Date', required: true },
-      { name: 'Daily Revenue', required: true },
+      { name: 'Monthly Revenue', required: true },
       { name: 'Gross Margin %', required: true },
       { name: 'Net Profit', required: false },
       { name: 'Food Cost %', required: false },
@@ -51,7 +51,7 @@ const DATASET_CONFIG = {
       { name: 'Platform Commission', required: false },
     ],
     preview_cols: ['date', 'daily_revenue', 'gross_margin_pct', 'net_profit', 'food_cost_pct', 'labor_cost_pct'],
-    preview_labels: ['Date', 'Revenue', 'Gross Margin%', 'Net Profit', 'Food Cost%', 'Labor%'],
+    preview_labels: ['Date', 'Monthly Revenue', 'Gross Margin%', 'Net Profit', 'Food Cost%', 'Labor%'],
   },
   pos: {
     label: 'Sales & Orders',
@@ -513,6 +513,7 @@ function SummaryStats({ type, summary, onViewAll }: { type: DataType; summary: a
             totalRecords={s.records ?? info.rows}
             onViewAll={onViewAll}
             formatters={{
+              date: (v: any) => fmtFinancialDate(v),
               daily_revenue: (v: any) => v != null ? `₹${Number(v).toLocaleString('en-IN', { maximumFractionDigits: 0 })}` : '—',
               gross_margin_pct: (v: any) => v != null ? `${Number(v).toFixed(1)}%` : '—',
               net_profit: (v: any) => v != null ? `₹${Number(v).toLocaleString('en-IN', { maximumFractionDigits: 0 })}` : '—',
@@ -742,6 +743,42 @@ function DataPreviewTable({
   )
 }
 
+// ─── Helpers ────────────────────────────────────────────────────────────────────
+
+/** Display a financial date as "Jan-2023" when it falls on the 1st of a month,
+ *  matching the original Excel period format (e.g. Jan-2023 stored as 2023-01-01). */
+function fmtFinancialDate(v: any): string {
+  if (v == null || v === '') return '—'
+  const s = String(v)
+  const d = new Date(s + 'T00:00:00')   // force local time to avoid UTC shift
+  if (isNaN(d.getTime())) return s
+  const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+  if (d.getDate() === 1) return `${MONTHS[d.getMonth()]}-${d.getFullYear()}`
+  return s
+}
+
+/** Human-friendly column header labels for the Data Viewer. */
+const COL_LABELS: Record<string, string> = {
+  daily_revenue:     'Monthly Revenue',
+  gross_margin_pct:  'Gross Margin %',
+  food_cost_pct:     'Food Cost %',
+  labor_cost_pct:    'Labor Cost %',
+  net_profit:        'Net Profit (₹)',
+  electricity:       'Electricity (₹)',
+  rent:              'Rent (₹)',
+  marketing:         'Marketing (₹)',
+  packaging:         'Packaging (₹)',
+  commission:        'Commission (₹)',
+  avg_order_value:   'Avg Order (₹)',
+  bill_amount:       'Bill Amount',
+  favorite_items:    'Favourite Items',
+  favourite_items:   'Favourite Items',
+  review_text:       'Review Text',
+  visit_frequency:   'Visit Freq',
+  loyalty_points:    'Loyalty Pts',
+  platform_source:   'Platform',
+}
+
 // ─── Data Viewer Modal ──────────────────────────────────────────────────────────
 
 function DataViewerModal({
@@ -762,8 +799,15 @@ function DataViewerModal({
   const [result, setResult] = useState<any>(null)
   const [loading, setLoading] = useState(false)
 
-  // Sync initialType when modal opens
-  useEffect(() => { if (isOpen) setActiveType(initialType) }, [isOpen, initialType])
+  // Always sync activeType when the caller changes which section to show.
+  // Using only [initialType] (not [isOpen, initialType]) ensures that clicking
+  // "View All Records" from a different section always switches to that section,
+  // even if the modal was already open or its internal tab had been changed.
+  useEffect(() => {
+    setActiveType(initialType)
+    setPage(1)
+    setSearch('')
+  }, [initialType])
 
   // Debounce search
   useEffect(() => {
@@ -801,16 +845,28 @@ function DataViewerModal({
 
   const fmtVal = (col: string, val: any) => {
     if (val == null || val === '') return '—'
+
+    // ── Date: show "Jan-2023" for financial month-period dates ────────────────
+    if (col === 'date' && activeType === 'financial') return fmtFinancialDate(val)
+
     if (typeof val === 'number') {
-      if (['daily_revenue', 'revenue', 'bill_amount', 'base_price', 'avg_order_value'].includes(col))
+      // ── Currency columns ── ₹ with comma formatting ────────────────────────
+      const CURRENCY_COLS = [
+        'daily_revenue', 'revenue', 'bill_amount', 'base_price', 'avg_order_value',
+        'net_profit', 'electricity', 'rent', 'marketing', 'packaging', 'commission',
+      ]
+      if (CURRENCY_COLS.includes(col))
         return `₹${Number(val).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`
+      // ── Percentage columns ─────────────────────────────────────────────────
       if (col.endsWith('_pct') || col.endsWith('_percent'))
         return `${Number(val).toFixed(1)}%`
       return String(val)
     }
+
     const s = String(val)
-    // Review text and notes get more space; other fields are truncated
-    const limit = ['review_text', 'notes', 'rationale', 'feedback'].includes(col) ? 120 : 40
+    // Wide columns: review text, notes, and favourite items show full content
+    const WIDE_COLS = ['review_text', 'notes', 'rationale', 'feedback', 'favorite_items', 'favourite_items']
+    const limit = WIDE_COLS.includes(col) ? 300 : 40
     return s.length > limit ? s.slice(0, limit - 2) + '…' : s
   }
 
@@ -928,7 +984,7 @@ function DataViewerModal({
                   <th className="px-3 py-2.5 text-left text-slate-400 font-semibold uppercase tracking-wide border-b border-slate-200 w-10">#</th>
                   {visibleCols.map((col) => (
                     <th key={col} className="px-3 py-2.5 text-left text-slate-500 font-semibold uppercase tracking-wide border-b border-slate-200 whitespace-nowrap">
-                      {col.replace(/_/g, ' ')}
+                      {COL_LABELS[col] ?? col.replace(/_/g, ' ')}
                     </th>
                   ))}
                 </tr>
@@ -941,8 +997,8 @@ function DataViewerModal({
                       <td
                         key={col}
                         className={`px-3 py-2 text-slate-700 ${
-                          ['review_text', 'notes', 'feedback'].includes(col)
-                            ? 'max-w-xs whitespace-normal break-words'
+                          ['review_text', 'notes', 'feedback', 'favorite_items', 'favourite_items'].includes(col)
+                            ? 'max-w-sm whitespace-normal break-words leading-relaxed'
                             : 'max-w-[200px] truncate'
                         }`}
                         title={String(row[col] ?? '')}

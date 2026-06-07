@@ -198,18 +198,17 @@ def _parse_financial(df: pd.DataFrame, filename: str) -> tuple[list, dict]:
         except Exception:
             skipped += 1
 
-    # Auto-fix: Excel often stores percentage columns as decimals (0.32 → 32%).
-    # Detect this by checking if the majority of non-None values in a pct column
-    # are <= 1.5 (dead giveaway of fractional encoding) and multiply by 100.
+    # Auto-fix: Excel sometimes stores percentage columns as decimals (0.32 → 32%).
+    # Fix is applied PER ROW: if a value is in (0, 1.5] it is almost certainly
+    # fractional encoding (e.g. 0.32 means 32%) and is multiplied by 100.
+    # Values > 1.5 are treated as already in percentage form (e.g. 65.0 = 65%).
+    # This handles mixed-format files where some rows have 65 and others have 0.65.
     _pct_fields = ["gross_margin_pct", "food_cost_pct", "labor_cost_pct", "net_profit"]
     for field in _pct_fields:
-        vals = [r[field] for r in records if r.get(field) is not None]
-        if vals:
-            median_val = sorted(vals)[len(vals) // 2]
-            if median_val <= 1.5:   # almost certainly fractional (e.g. 0.32 means 32%)
-                for r in records:
-                    if r.get(field) is not None:
-                        r[field] = round(r[field] * 100, 2)
+        for r in records:
+            val = r.get(field)
+            if val is not None and 0 < val <= 1.5:
+                r[field] = round(val * 100, 2)
 
     dates = sorted(set(r["date"] for r in records))
     detected = {k: v for k, v in {
