@@ -1,12 +1,14 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Coffee, Eye, EyeOff, AlertCircle } from 'lucide-react'
+import { useAuth } from '../context/AuthContext'
 
 export default function Login() {
   const navigate = useNavigate()
-  const [form, setForm] = useState({ username: '', password: '' })
-  const [showPw, setShowPw] = useState(false)
-  const [error, setError] = useState('')
+  const { login } = useAuth()
+  const [form,    setForm]   = useState({ username: '', password: '' })
+  const [showPw,  setShowPw] = useState(false)
+  const [error,   setError]  = useState('')
   const [loading, setLoading] = useState(false)
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -24,11 +26,15 @@ export default function Login() {
         throw new Error(data.detail || 'Login failed')
       }
       const data = await res.json()
-      localStorage.setItem('cafe_buddy_auth', JSON.stringify({
-        username: data.username,
-        role: data.role,
-        token: data.token,
-      }))
+      // Store full auth payload (including permissions) via AuthContext
+      login({
+        username:    data.username,
+        full_name:   data.full_name ?? data.username,
+        role_id:     data.role_id ?? 'viewer',
+        role:        data.role ?? 'Viewer',
+        permissions: data.permissions ?? [],
+        token:       data.token,
+      })
       navigate('/', { replace: true })
     } catch (err: any) {
       setError(err.message || 'Invalid credentials')
@@ -110,22 +116,26 @@ export default function Login() {
           {/* Demo credentials hint */}
           <div className="mt-6 p-3 bg-slate-50 rounded-lg border border-slate-200">
             <p className="text-xs font-semibold text-slate-500 mb-2">Demo Credentials</p>
-            <div className="grid grid-cols-2 gap-2 text-xs">
-              <div>
-                <span className="text-slate-400">Username: </span>
-                <button
-                  className="font-mono font-semibold text-brand-600 hover:underline"
-                  onClick={() => setForm({ username: 'admin', password: 'cafe123' })}
-                >
-                  admin
-                </button>
-              </div>
-              <div>
-                <span className="text-slate-400">Password: </span>
-                <span className="font-mono font-semibold text-brand-600">cafe123</span>
-              </div>
+            <div className="space-y-1 text-xs">
+              {[
+                { user: 'admin', pass: 'cafe123', role: 'Admin (full access)' },
+                { user: 'owner', pass: 'buddy@2024', role: 'Admin (full access)' },
+              ].map(c => (
+                <div key={c.user} className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <button
+                      className="font-mono font-semibold text-brand-600 hover:underline"
+                      onClick={() => setForm({ username: c.user, password: c.pass })}
+                    >
+                      {c.user}
+                    </button>
+                    <span className="text-slate-400">/ {c.pass}</span>
+                  </div>
+                  <span className="text-slate-400 text-right shrink-0">{c.role}</span>
+                </div>
+              ))}
             </div>
-            <p className="text-xs text-slate-400 mt-1">(Click username to auto-fill)</p>
+            <p className="text-xs text-slate-400 mt-1.5">(Click username to auto-fill)</p>
           </div>
         </div>
 

@@ -10,29 +10,48 @@ import CafeOS from './pages/CafeOS'
 import Chatbot from './pages/Chatbot'
 import WhatsAppNotifications from './pages/WhatsAppNotifications'
 import PeerComparison from './pages/PeerComparison'
+import RoleManagement from './pages/RoleManagement'
 import { SidebarProvider } from './context/SidebarContext'
+import { AuthProvider, useAuth } from './context/AuthContext'
 
-function isAuthenticated(): boolean {
-  try {
-    const raw = localStorage.getItem('cafe_buddy_auth')
-    if (!raw) return false
-    const parsed = JSON.parse(raw)
-    return Boolean(parsed?.token)
-  } catch {
-    return false
+// ─── Route-level permission guard ────────────────────────────────────────────
+/**
+ * Wraps a page that requires a specific permission key.
+ * Redirects to "/" with a "forbidden" flash if the current user lacks it.
+ * If the user is not logged in at all, redirects to /login.
+ */
+function PermissionRoute({
+  feature,
+  children,
+}: {
+  feature: string
+  children: React.ReactNode
+}) {
+  const { user, hasPermission } = useAuth()
+  const location = useLocation()
+
+  if (!user) {
+    return <Navigate to="/login" state={{ from: location }} replace />
   }
+  if (!hasPermission(feature)) {
+    return <Navigate to="/" replace />
+  }
+  return <>{children}</>
 }
 
+// ─── Authenticated layout wrapper ────────────────────────────────────────────
 function PrivateLayout({ children }: { children: React.ReactNode }) {
+  const { user } = useAuth()
   const location = useLocation()
-  if (!isAuthenticated()) {
+
+  if (!user) {
     return <Navigate to="/login" state={{ from: location }} replace />
   }
   return (
     <SidebarProvider>
       <div className="flex min-h-screen bg-slate-100">
         <Sidebar />
-        {/* md:ml-64 pushes content right of sidebar on desktop; on mobile content fills full width */}
+        {/* md:ml-64 pushes content right of sidebar on desktop */}
         <div className="flex-1 md:ml-64 min-h-screen flex flex-col min-w-0">
           {children}
         </div>
@@ -41,47 +60,106 @@ function PrivateLayout({ children }: { children: React.ReactNode }) {
   )
 }
 
+// ─── Public route (redirect to home if already logged in) ────────────────────
 function PublicRoute({ children }: { children: React.ReactNode }) {
-  if (isAuthenticated()) return <Navigate to="/" replace />
+  const { user } = useAuth()
+  if (user) return <Navigate to="/" replace />
   return <>{children}</>
 }
 
+// ─── App ─────────────────────────────────────────────────────────────────────
 export default function App() {
   return (
-    <BrowserRouter>
-      <Routes>
-        <Route path="/login" element={
-          <PublicRoute><Login /></PublicRoute>
-        } />
-        <Route path="/" element={
-          <PrivateLayout><Dashboard /></PrivateLayout>
-        } />
-        <Route path="/data-collection" element={
-          <PrivateLayout><DataCollection /></PrivateLayout>
-        } />
-        <Route path="/data-engineering" element={
-          <PrivateLayout><DataEngineering /></PrivateLayout>
-        } />
-        <Route path="/ai-intelligence" element={
-          <PrivateLayout><AIMLIntelligence /></PrivateLayout>
-        } />
-        <Route path="/decision-engine" element={
-          <PrivateLayout><DecisionEngine /></PrivateLayout>
-        } />
-        <Route path="/cafe-os" element={
-          <PrivateLayout><CafeOS /></PrivateLayout>
-        } />
-        <Route path="/chatbot" element={
-          <PrivateLayout><Chatbot /></PrivateLayout>
-        } />
-        <Route path="/notifications" element={
-          <PrivateLayout><WhatsAppNotifications /></PrivateLayout>
-        } />
-        <Route path="/peer-comparison" element={
-          <PrivateLayout><PeerComparison /></PrivateLayout>
-        } />
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
-    </BrowserRouter>
+    <AuthProvider>
+      <BrowserRouter>
+        <Routes>
+          {/* Public */}
+          <Route path="/login" element={
+            <PublicRoute><Login /></PublicRoute>
+          } />
+
+          {/* Protected — dashboard (always accessible when logged in) */}
+          <Route path="/" element={
+            <PrivateLayout><Dashboard /></PrivateLayout>
+          } />
+
+          {/* Protected — feature-gated pages */}
+          <Route path="/data-collection" element={
+            <PrivateLayout>
+              <PermissionRoute feature="upload_data">
+                <DataCollection />
+              </PermissionRoute>
+            </PrivateLayout>
+          } />
+
+          <Route path="/data-engineering" element={
+            <PrivateLayout>
+              <PermissionRoute feature="reports">
+                <DataEngineering />
+              </PermissionRoute>
+            </PrivateLayout>
+          } />
+
+          <Route path="/ai-intelligence" element={
+            <PrivateLayout>
+              <PermissionRoute feature="analytics">
+                <AIMLIntelligence />
+              </PermissionRoute>
+            </PrivateLayout>
+          } />
+
+          <Route path="/decision-engine" element={
+            <PrivateLayout>
+              <PermissionRoute feature="decision_engine">
+                <DecisionEngine />
+              </PermissionRoute>
+            </PrivateLayout>
+          } />
+
+          <Route path="/cafe-os" element={
+            <PrivateLayout>
+              <PermissionRoute feature="auto_pilot">
+                <CafeOS />
+              </PermissionRoute>
+            </PrivateLayout>
+          } />
+
+          <Route path="/chatbot" element={
+            <PrivateLayout>
+              <PermissionRoute feature="chatbot">
+                <Chatbot />
+              </PermissionRoute>
+            </PrivateLayout>
+          } />
+
+          <Route path="/peer-comparison" element={
+            <PrivateLayout>
+              <PermissionRoute feature="market_radar">
+                <PeerComparison />
+              </PermissionRoute>
+            </PrivateLayout>
+          } />
+
+          <Route path="/notifications" element={
+            <PrivateLayout>
+              <PermissionRoute feature="whatsapp_alerts">
+                <WhatsAppNotifications />
+              </PermissionRoute>
+            </PrivateLayout>
+          } />
+
+          <Route path="/role-management" element={
+            <PrivateLayout>
+              <PermissionRoute feature="role_management">
+                <RoleManagement />
+              </PermissionRoute>
+            </PrivateLayout>
+          } />
+
+          {/* Fallback */}
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </BrowserRouter>
+    </AuthProvider>
   )
 }

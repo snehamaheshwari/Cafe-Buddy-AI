@@ -2,6 +2,7 @@ import { Bell, RefreshCw, LogOut, Menu } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useSidebar } from '../context/SidebarContext'
+import { useAuth } from '../context/AuthContext'
 
 interface Props {
   title: string
@@ -9,13 +10,10 @@ interface Props {
 }
 
 export default function Header({ title, subtitle }: Props) {
-  const [time, setTime] = useState(new Date())
-  const navigate = useNavigate()
-  const { toggle } = useSidebar()
-
-  const user = (() => {
-    try { return JSON.parse(localStorage.getItem('cafe_buddy_auth') || '{}') } catch { return {} }
-  })()
+  const [time, setTime]  = useState(new Date())
+  const navigate         = useNavigate()
+  const { toggle }       = useSidebar()
+  const { user, logout } = useAuth()
 
   useEffect(() => {
     const t = setInterval(() => setTime(new Date()), 1000)
@@ -23,7 +21,7 @@ export default function Header({ title, subtitle }: Props) {
   }, [])
 
   const handleSignOut = () => {
-    localStorage.removeItem('cafe_buddy_auth')
+    logout()
     navigate('/login', { replace: true })
   }
 
@@ -72,11 +70,11 @@ export default function Header({ title, subtitle }: Props) {
         {/* User + sign-out */}
         <div className="flex items-center gap-2 pl-2 border-l border-slate-200">
           <div className="w-8 h-8 rounded bg-brand-500 flex items-center justify-center text-white text-xs font-bold uppercase flex-shrink-0">
-            {(user.username || 'A').slice(0, 2)}
+            {(user?.username || 'A').slice(0, 2)}
           </div>
           <div className="hidden sm:block">
-            <div className="text-xs font-semibold text-slate-700 capitalize">{user.username || 'Admin'}</div>
-            <div className="text-xs text-slate-400">{user.role || 'Owner'}</div>
+            <div className="text-xs font-semibold text-slate-700 capitalize">{user?.full_name || user?.username || 'User'}</div>
+            <div className="text-xs text-slate-400">{user?.role || 'Viewer'}</div>
           </div>
           <button
             onClick={handleSignOut}

@@ -18,6 +18,7 @@ from multi_upload import router as multi_upload_router
 from sentiment_engine import get_engine as get_sentiment_engine
 import ml_models
 import peer_comparison as pc
+import role_store as _rs
 
 app = FastAPI(title="Cafe Buddy API", version="2.0.0")
 app.include_router(chatbot_router, prefix="/api")
@@ -496,22 +497,133 @@ def _calc_kpis(data: list) -> list:
 # AUTH
 # ─────────────────────────────────────────────
 
-VALID_USERS = {"admin": "cafe123", "owner": "buddy@2024"}
-
 class LoginRequest(BaseModel):
     username: str
     password: str
 
 @app.post("/api/auth/login")
 def login(req: LoginRequest):
-    if VALID_USERS.get(req.username) == req.password:
-        return {"success": True, "username": req.username, "role": "Admin",
-                "token": f"demo-token-{req.username}"}
-    raise HTTPException(status_code=401, detail="Invalid username or password")
+    result = _rs.authenticate(req.username, req.password)
+    if not result:
+        raise HTTPException(status_code=401, detail="Invalid username or password")
+    return {
+        "success":     True,
+        "username":    result["username"],
+        "full_name":   result["full_name"],
+        "role":        result["role_name"],
+        "role_id":     result["role_id"],
+        "permissions": result["permissions"],
+        "token":       f"demo-token-{result['username']}",
+    }
 
 @app.post("/api/auth/logout")
 def logout():
     return {"success": True, "message": "Logged out"}
+
+# ─────────────────────────────────────────────
+# ROLE MANAGEMENT API
+# ─────────────────────────────────────────────
+
+class RoleCreateRequest(BaseModel):
+    id: str
+    name: str
+    description: str = ""
+    permissions: list[str] = []
+
+class RoleUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    permissions: Optional[list[str]] = None
+
+@app.get("/api/roles")
+def get_roles():
+    return {
+        "roles": _rs.list_roles(),
+        "all_permissions": _rs.ALL_PERMISSIONS,
+        "permission_labels": _rs.PERMISSION_LABELS,
+    }
+
+@app.post("/api/roles")
+def create_role(req: RoleCreateRequest):
+    try:
+        role = _rs.create_role(req.id, req.name, req.description, req.permissions)
+        return {"success": True, "role": role}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.put("/api/roles/{role_id}")
+def update_role(role_id: str, req: RoleUpdateRequest):
+    try:
+        role = _rs.update_role(role_id, name=req.name,
+                               description=req.description, permissions=req.permissions)
+        return {"success": True, "role": role}
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.delete("/api/roles/{role_id}")
+def delete_role(role_id: str):
+    try:
+        _rs.delete_role(role_id)
+        return {"success": True, "message": f"Role '{role_id}' deleted"}
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+# ─────────────────────────────────────────────
+# USER MANAGEMENT API
+# ─────────────────────────────────────────────
+
+class UserCreateRequest(BaseModel):
+    username: str
+    password: str
+    role_id: str
+    full_name: str = ""
+    email: str = ""
+
+class UserUpdateRequest(BaseModel):
+    role_id: Optional[str] = None
+    full_name: Optional[str] = None
+    email: Optional[str] = None
+    is_active: Optional[bool] = None
+    password: Optional[str] = None
+
+@app.get("/api/users")
+def get_users():
+    return {"users": _rs.list_users()}
+
+@app.post("/api/users")
+def create_user(req: UserCreateRequest):
+    try:
+        user = _rs.create_user(req.username, req.password, req.role_id,
+                               req.full_name, req.email)
+        return {"success": True, "user": user}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.put("/api/users/{username}")
+def update_user(username: str, req: UserUpdateRequest):
+    try:
+        user = _rs.update_user(username, role_id=req.role_id, full_name=req.full_name,
+                               email=req.email, is_active=req.is_active,
+                               password=req.password)
+        return {"success": True, "user": user}
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.delete("/api/users/{username}")
+def delete_user(username: str):
+    try:
+        _rs.delete_user(username)
+        return {"success": True, "message": f"User '{username}' deleted"}
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 # ─────────────────────────────────────────────
 # EXCEL UPLOAD
