@@ -30,6 +30,7 @@ ALL_PERMISSIONS: list[str] = [
     "market_radar",
     "whatsapp_alerts",
     "role_management",
+    "audit_logs",
 ]
 
 PERMISSION_LABELS: dict[str, str] = {
@@ -43,6 +44,7 @@ PERMISSION_LABELS: dict[str, str] = {
     "market_radar":    "Market Radar",
     "whatsapp_alerts": "WhatsApp Alerts",
     "role_management": "Role Management",
+    "audit_logs":      "Audit Logs",
 }
 
 # ─── System roles (always present, cannot be deleted) ─────────────────────────
@@ -50,9 +52,9 @@ _DEFAULT_ROLES: dict[str, dict] = {
     "admin": {
         "id":          "admin",
         "name":        "Admin",
-        "description": "Full access to all features including role management",
+        "description": "Full access to all features including role management and audit logs",
         "is_system":   True,
-        "permissions": list(ALL_PERMISSIONS),
+        "permissions": list(ALL_PERMISSIONS),  # includes audit_logs
     },
     "sub_admin": {
         "id":          "sub_admin",
@@ -220,9 +222,12 @@ def update_role(
         bad = [p for p in permissions if p not in ALL_PERMISSIONS]
         if bad:
             raise ValueError(f"Unknown permissions: {bad}")
-        # Admin role must always retain role_management
-        if role_id == "admin" and "role_management" not in permissions:
-            permissions = list(permissions) + ["role_management"]
+        # Admin role must always retain role_management and audit_logs
+        if role_id == "admin":
+            must_have = ["role_management", "audit_logs"]
+            for perm in must_have:
+                if perm not in permissions:
+                    permissions = list(permissions) + [perm]
         role["permissions"] = list(permissions)
     _save()
     return role

@@ -19,6 +19,10 @@ from sentiment_engine import get_engine as get_sentiment_engine
 import ml_models
 import peer_comparison as pc
 import role_store as _rs
+import audit_store as _audit
+
+from fastapi import Request
+from fastapi.responses import Response, StreamingResponse
 
 app = FastAPI(title="Cafe Buddy API", version="2.0.0")
 app.include_router(chatbot_router, prefix="/api")
@@ -31,6 +35,52 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ─── Audit middleware ─────────────────────────────────────────────────────────
+# Captures the X-Username header set by the frontend apiFetch wrapper.
+# Light-weight: only logs if X-Username is present (authenticated routes).
+# Heavy data endpoints are excluded to avoid double-logging (they log explicitly).
+_AUDIT_EXCLUDE_PREFIXES = (
+    "/assets/", "/health", "/api/upload/status", "/api/dashboard",
+    "/api/layer1", "/api/layer2", "/api/layer3", "/api/layer4",
+    "/api/layer5", "/api/ml", "/api/peers", "/api/audit",
+    "/api/roles", "/api/users",
+)
+
+@app.middleware("http")
+async def audit_middleware(request: Request, call_next):
+    import time
+    start = time.monotonic()
+    response = await call_next(request)
+    elapsed_ms = int((time.monotonic() - start) * 1000)
+
+    username = request.headers.get("X-Username", "")
+    path     = request.url.path
+    method   = request.method
+
+    # Only log authenticated requests that aren't handled by explicit audit calls
+    if username and not any(path.startswith(p) for p in _AUDIT_EXCLUDE_PREFIXES):
+        # Derive module from path
+        module = "system"
+        if "/auth/" in path:
+            module = "auth"
+        elif "/sentiment" in path:
+            module = "analytics"
+
+        action = f"{method}_REQUEST"
+        status_code = response.status_code
+        _audit.log_action(
+            username=username,
+            module=module,
+            action=action,
+            description=f"{method} {path}",
+            role=request.headers.get("X-Role", ""),
+            status=_audit.STATUS_SUCCESS if status_code < 400 else _audit.STATUS_ERROR,
+            ip_address=request.client.host if request.client else "",
+            duration_ms=elapsed_ms,
+        )
+    return response
 
 random.seed(None)  # non-deterministic seed so each load looks live
 
@@ -502,10 +552,27 @@ class LoginRequest(BaseModel):
     password: str
 
 @app.post("/api/auth/login")
-def login(req: LoginRequest):
+def login(req: LoginRequest, request: Request = None):
     result = _rs.authenticate(req.username, req.password)
     if not result:
+        _audit.log_action(
+            username=req.username,
+            module="auth",
+            action="LOGIN",
+            description=f"Failed login attempt for user '{req.username}'",
+            status=_audit.STATUS_ERROR,
+            ip_address=(request.client.host if request and request.client else ""),
+        )
         raise HTTPException(status_code=401, detail="Invalid username or password")
+    _audit.log_action(
+        username=result["username"],
+        module="auth",
+        action="LOGIN",
+        description=f"User '{result['username']}' logged in as {result['role_name']}",
+        role=result["role_name"],
+        status=_audit.STATUS_SUCCESS,
+        ip_address=(request.client.host if request and request.client else ""),
+    )
     return {
         "success":     True,
         "username":    result["username"],
@@ -517,7 +584,15 @@ def login(req: LoginRequest):
     }
 
 @app.post("/api/auth/logout")
-def logout():
+def logout(request: Request = None):
+    username = request.headers.get("X-Username", "anonymous") if request else "anonymous"
+    _audit.log_action(
+        username=username,
+        module="auth",
+        action="LOGOUT",
+        description=f"User '{username}' logged out",
+        ip_address=(request.client.host if request and request.client else ""),
+    )
     return {"success": True, "message": "Logged out"}
 
 # ─────────────────────────────────────────────
@@ -544,18 +619,26 @@ def get_roles():
     }
 
 @app.post("/api/roles")
-def create_role(req: RoleCreateRequest):
+def create_role(req: RoleCreateRequest, request: Request = None):
     try:
         role = _rs.create_role(req.id, req.name, req.description, req.permissions)
+        username = request.headers.get("X-Username", "admin") if request else "admin"
+        _audit.log_action(username=username, module="role_management", action="ROLE_CREATE",
+            description=f"Created role '{req.name}' (id={req.id}) with {len(req.permissions)} permissions",
+            ip_address=(request.client.host if request and request.client else ""))
         return {"success": True, "role": role}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.put("/api/roles/{role_id}")
-def update_role(role_id: str, req: RoleUpdateRequest):
+def update_role(role_id: str, req: RoleUpdateRequest, request: Request = None):
     try:
         role = _rs.update_role(role_id, name=req.name,
                                description=req.description, permissions=req.permissions)
+        username = request.headers.get("X-Username", "admin") if request else "admin"
+        _audit.log_action(username=username, module="role_management", action="ROLE_UPDATE",
+            description=f"Updated role '{role_id}': name={req.name}, perms={req.permissions}",
+            ip_address=(request.client.host if request and request.client else ""))
         return {"success": True, "role": role}
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -563,9 +646,13 @@ def update_role(role_id: str, req: RoleUpdateRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.delete("/api/roles/{role_id}")
-def delete_role(role_id: str):
+def delete_role(role_id: str, request: Request = None):
     try:
         _rs.delete_role(role_id)
+        username = request.headers.get("X-Username", "admin") if request else "admin"
+        _audit.log_action(username=username, module="role_management", action="ROLE_DELETE",
+            description=f"Deleted role '{role_id}'",
+            ip_address=(request.client.host if request and request.client else ""))
         return {"success": True, "message": f"Role '{role_id}' deleted"}
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -595,20 +682,32 @@ def get_users():
     return {"users": _rs.list_users()}
 
 @app.post("/api/users")
-def create_user(req: UserCreateRequest):
+def create_user(req: UserCreateRequest, request: Request = None):
     try:
         user = _rs.create_user(req.username, req.password, req.role_id,
                                req.full_name, req.email)
+        actor = request.headers.get("X-Username", "admin") if request else "admin"
+        _audit.log_action(username=actor, module="role_management", action="USER_CREATE",
+            description=f"Created user '{req.username}' with role '{req.role_id}'",
+            ip_address=(request.client.host if request and request.client else ""))
         return {"success": True, "user": user}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.put("/api/users/{username}")
-def update_user(username: str, req: UserUpdateRequest):
+def update_user(username: str, req: UserUpdateRequest, request: Request = None):
     try:
         user = _rs.update_user(username, role_id=req.role_id, full_name=req.full_name,
                                email=req.email, is_active=req.is_active,
                                password=req.password)
+        actor = request.headers.get("X-Username", "admin") if request else "admin"
+        changes = []
+        if req.role_id: changes.append(f"role→{req.role_id}")
+        if req.is_active is not None: changes.append(f"active→{req.is_active}")
+        if req.full_name: changes.append("full_name updated")
+        _audit.log_action(username=actor, module="role_management", action="USER_UPDATE",
+            description=f"Updated user '{username}': {', '.join(changes) or 'no changes'}",
+            ip_address=(request.client.host if request and request.client else ""))
         return {"success": True, "user": user}
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -616,9 +715,13 @@ def update_user(username: str, req: UserUpdateRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.delete("/api/users/{username}")
-def delete_user(username: str):
+def delete_user(username: str, request: Request = None):
     try:
         _rs.delete_user(username)
+        actor = request.headers.get("X-Username", "admin") if request else "admin"
+        _audit.log_action(username=actor, module="role_management", action="USER_DELETE",
+            description=f"Deleted user '{username}'",
+            ip_address=(request.client.host if request and request.client else ""))
         return {"success": True, "message": f"User '{username}' deleted"}
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -630,16 +733,20 @@ def delete_user(username: str):
 # ─────────────────────────────────────────────
 
 @app.post("/api/upload/excel")
-async def upload_excel(file: UploadFile = File(...)):
+async def upload_excel(file: UploadFile = File(...), request: Request = None):
     global _uploaded_data, _upload_info, _decision_overrides
 
     if not file.filename.endswith((".xlsx", ".xls")):
         raise HTTPException(status_code=400, detail="Only .xlsx or .xls files are supported.")
 
     raw = await file.read()
+    username = request.headers.get("X-Username", "unknown") if request else "unknown"
     try:
         records, info = _parse_excel_bytes(raw)
     except ValueError as e:
+        _audit.log_action(username=username, module="upload_data", action="FILE_UPLOAD",
+            description=f"Failed to parse '{file.filename}': {e}", status=_audit.STATUS_ERROR,
+            ip_address=(request.client.host if request and request.client else ""))
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to parse Excel: {e}")
@@ -653,6 +760,10 @@ async def upload_excel(file: UploadFile = File(...)):
     _decision_overrides = {}  # reset on new upload
     _sync_data_store()
 
+    _audit.log_action(username=username, module="upload_data", action="FILE_UPLOAD",
+        description=f"Uploaded '{file.filename}' — {len(records)} records, {info.get('unique_dates', 0)} days, "
+                    f"{info.get('unique_items', 0)} items",
+        ip_address=(request.client.host if request and request.client else ""))
     return {"success": True, "message": f"Loaded {len(records)} records.", "info": _upload_info}
 
 
@@ -664,8 +775,12 @@ def upload_status():
 
 
 @app.delete("/api/upload/clear")
-def clear_upload():
+def clear_upload(request: Request = None):
     global _uploaded_data, _upload_info, _decision_overrides
+    username = request.headers.get("X-Username", "unknown") if request else "unknown"
+    _audit.log_action(username=username, module="upload_data", action="FILE_CLEAR",
+        description="Cleared uploaded data — reverted to demo mode",
+        ip_address=(request.client.host if request and request.client else ""))
     _uploaded_data = []
     _upload_info = {}
     _decision_overrides = {}
@@ -1351,14 +1466,22 @@ def sentiment_overview():
 
 
 @app.post("/api/layer4/decisions/{decision_id}/approve")
-def approve_decision(decision_id: int):
+def approve_decision(decision_id: int, request: Request = None):
     _decision_overrides[decision_id] = "approved"
+    username = request.headers.get("X-Username", "unknown") if request else "unknown"
+    _audit.log_action(username=username, module="decision_engine", action="DECISION_APPROVE",
+        description=f"Approved decision #{decision_id}",
+        ip_address=(request.client.host if request and request.client else ""))
     return {"success": True, "message": f"Decision #{decision_id} approved."}
 
 
 @app.post("/api/layer4/decisions/{decision_id}/reject")
-def reject_decision(decision_id: int):
+def reject_decision(decision_id: int, request: Request = None):
     _decision_overrides[decision_id] = "rejected"
+    username = request.headers.get("X-Username", "unknown") if request else "unknown"
+    _audit.log_action(username=username, module="decision_engine", action="DECISION_REJECT",
+        description=f"Rejected decision #{decision_id}",
+        ip_address=(request.client.host if request and request.client else ""))
     return {"success": True, "message": f"Decision #{decision_id} rejected."}
 
 # ─────────────────────────────────────────────
@@ -1476,7 +1599,7 @@ async def peer_live_search(city: str, area: str):
     return {"results": results, "count": len(results)}
 
 @app.post("/api/peers/analyze")
-def peer_analyze(req: PeerAnalyzeRequest):
+def peer_analyze(req: PeerAnalyzeRequest, request: Request = None):
     competitors = pc.get_competitors(req.city, req.area)
     data = get_data()
     our_stats = {}
@@ -1489,8 +1612,83 @@ def peer_analyze(req: PeerAnalyzeRequest):
             "total_revenue": round(total_rev),
             "top_item": items[0]["name"] if items else "N/A",
         }
+    username = request.headers.get("X-Username", "unknown") if request else "unknown"
+    _audit.log_action(username=username, module="market_radar", action="PEER_ANALYSIS",
+        description=f"Ran peer analysis for {req.city}" + (f" / {req.area}" if req.area else "")
+                    + f" — {len(competitors)} competitors",
+        ip_address=(request.client.host if request and request.client else ""))
     result = pc.analyze_with_ai(our_stats, competitors, req.city, req.area or "")
     return result
+
+
+# ─────────────────────────────────────────────
+# AUDIT LOG API
+# ─────────────────────────────────────────────
+
+@app.get("/api/audit/logs")
+def get_audit_logs(
+    request: Request,
+    limit:     int = 50,
+    offset:    int = 0,
+    username:  Optional[str] = None,
+    module:    Optional[str] = None,
+    action:    Optional[str] = None,
+    status:    Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to:   Optional[str] = None,
+    search:    Optional[str] = None,
+    from_disk: bool = False,
+):
+    actor = request.headers.get("X-Username", "unknown")
+    entries, total = _audit.get_logs(
+        limit=limit, offset=offset,
+        username=username, module=module, action=action, status=status,
+        date_from=date_from, date_to=date_to, search=search, from_disk=from_disk,
+    )
+    _audit.log_action(username=actor, module="audit_logs", action="AUDIT_VIEW",
+        description=f"Viewed audit logs (filters: user={username}, module={module}, "
+                    f"action={action}, limit={limit}, offset={offset})",
+        ip_address=(request.client.host if request.client else ""))
+    return {"logs": entries, "total": total, "limit": limit, "offset": offset}
+
+
+@app.get("/api/audit/stats")
+def get_audit_stats():
+    return _audit.get_stats()
+
+
+@app.get("/api/audit/export")
+def export_audit_csv(
+    request: Request,
+    username:  Optional[str] = None,
+    module:    Optional[str] = None,
+    action:    Optional[str] = None,
+    status:    Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to:   Optional[str] = None,
+):
+    entries, _ = _audit.get_logs(
+        limit=10_000, offset=0,
+        username=username, module=module, action=action, status=status,
+        date_from=date_from, date_to=date_to, from_disk=True,
+    )
+    actor = request.headers.get("X-Username", "unknown")
+    _audit.log_action(username=actor, module="audit_logs", action="EXPORT",
+        description=f"Exported {len(entries)} audit log entries as CSV",
+        ip_address=(request.client.host if request.client else ""))
+    csv_content = _audit.export_csv(entries)
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=audit_logs.csv"},
+    )
+
+
+@app.get("/api/audit/modules")
+def get_audit_modules():
+    return {"modules": list(_audit.MODULE_LABELS.keys()),
+            "labels": _audit.MODULE_LABELS,
+            "action_types": _audit.ACTION_TYPES}
 
 # ─────────────────────────────────────────────
 # HEALTH CHECK  (used by Render & UptimeRobot)

@@ -3,7 +3,7 @@ import { useEffect } from 'react'
 import {
   LayoutDashboard, Database, BarChart2, TrendingUp,
   Lightbulb, Rocket, MessageCircle, Coffee, ChevronRight,
-  X, Bell, Target, Settings, LogOut,
+  X, Bell, Target, Settings, LogOut, Shield,
 } from 'lucide-react'
 import { useSidebar } from '../context/SidebarContext'
 import { useAuth } from '../context/AuthContext'
@@ -129,40 +129,74 @@ export default function Sidebar() {
               )
             })}
 
-            {/* Role Management — admin only */}
-            {hasPermission('role_management') && (
+            {/* Admin section — Role Management + Audit Logs */}
+            {(hasPermission('role_management') || hasPermission('audit_logs')) && (
               <>
                 <li className="pt-3 pb-1">
                   <p className="text-slate-600 text-xs font-semibold uppercase tracking-wider px-2">Admin</p>
                 </li>
-                <li>
-                  <NavLink
-                    to="/role-management"
-                    className={({ isActive }) =>
-                      `flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all group ${
-                        isActive
-                          ? 'bg-slate-800 text-white shadow-sm'
-                          : 'text-slate-400 hover:bg-slate-800/70 hover:text-slate-200'
-                      }`
-                    }
-                  >
-                    {({ isActive }) => (
-                      <>
-                        <Settings
-                          size={16}
-                          className={`flex-shrink-0 ${isActive ? 'text-brand-400' : 'text-slate-500 group-hover:text-slate-300'}`}
-                        />
-                        <div className="flex-1 min-w-0">
-                          <div className="font-medium leading-tight truncate">Role Management</div>
-                          <div className={`text-xs leading-tight truncate mt-0.5 ${
-                            isActive ? 'text-slate-400' : 'text-slate-600 group-hover:text-slate-500'
-                          }`}>Users & permissions</div>
-                        </div>
-                        {isActive && <ChevronRight size={13} className="text-brand-400 flex-shrink-0" />}
-                      </>
-                    )}
-                  </NavLink>
-                </li>
+
+                {hasPermission('role_management') && (
+                  <li>
+                    <NavLink
+                      to="/role-management"
+                      className={({ isActive }) =>
+                        `flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all group ${
+                          isActive
+                            ? 'bg-slate-800 text-white shadow-sm'
+                            : 'text-slate-400 hover:bg-slate-800/70 hover:text-slate-200'
+                        }`
+                      }
+                    >
+                      {({ isActive }) => (
+                        <>
+                          <Settings
+                            size={16}
+                            className={`flex-shrink-0 ${isActive ? 'text-brand-400' : 'text-slate-500 group-hover:text-slate-300'}`}
+                          />
+                          <div className="flex-1 min-w-0">
+                            <div className="font-medium leading-tight truncate">Role Management</div>
+                            <div className={`text-xs leading-tight truncate mt-0.5 ${
+                              isActive ? 'text-slate-400' : 'text-slate-600 group-hover:text-slate-500'
+                            }`}>Users & permissions</div>
+                          </div>
+                          {isActive && <ChevronRight size={13} className="text-brand-400 flex-shrink-0" />}
+                        </>
+                      )}
+                    </NavLink>
+                  </li>
+                )}
+
+                {hasPermission('audit_logs') && (
+                  <li>
+                    <NavLink
+                      to="/audit"
+                      className={({ isActive }) =>
+                        `flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all group ${
+                          isActive
+                            ? 'bg-slate-800 text-white shadow-sm'
+                            : 'text-slate-400 hover:bg-slate-800/70 hover:text-slate-200'
+                        }`
+                      }
+                    >
+                      {({ isActive }) => (
+                        <>
+                          <Shield
+                            size={16}
+                            className={`flex-shrink-0 ${isActive ? 'text-brand-400' : 'text-slate-500 group-hover:text-slate-300'}`}
+                          />
+                          <div className="flex-1 min-w-0">
+                            <div className="font-medium leading-tight truncate">Audit Logs</div>
+                            <div className={`text-xs leading-tight truncate mt-0.5 ${
+                              isActive ? 'text-slate-400' : 'text-slate-600 group-hover:text-slate-500'
+                            }`}>Activity trail</div>
+                          </div>
+                          {isActive && <ChevronRight size={13} className="text-brand-400 flex-shrink-0" />}
+                        </>
+                      )}
+                    </NavLink>
+                  </li>
+                )}
               </>
             )}
           </ul>
