@@ -31,6 +31,7 @@ from main import (
     _item_stats,
     _platform_breakdown,
     health,
+    download_template,
 )
 
 # ─── helpers ─────────────────────────────────────────────────────────────────
