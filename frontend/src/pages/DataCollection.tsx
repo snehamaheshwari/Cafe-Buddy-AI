@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   CheckCircle, AlertCircle, Upload, FileSpreadsheet, Trash2,
   Info, TrendingUp, Users, ShoppingCart, AlertTriangle, X, MessageSquare, UtensilsCrossed,
-  Database, Search, ChevronLeft, ChevronRight, PlusCircle, Link2, Wifi, Save, TestTube,
+  Database, Search, ChevronLeft, ChevronRight, PlusCircle, Link2, Wifi, Save, TestTube, Download,
 } from 'lucide-react'
 import Header from '../components/Header'
 import { api } from '../lib/api'
@@ -1332,6 +1332,25 @@ function DatasetTab({
               type={type}
               onUpload={(info, summary) => onStatusChange({ uploaded: true, info, summary })}
             />
+
+            {/* Download Template */}
+            <div className="flex items-center justify-between gap-3 p-3 bg-blue-50 border border-blue-100 rounded-lg">
+              <div className="flex items-start gap-2 min-w-0">
+                <Download size={13} className="text-blue-500 mt-0.5 flex-shrink-0" />
+                <div className="min-w-0">
+                  <p className="text-xs font-semibold text-blue-800">Need a template?</p>
+                  <p className="text-xs text-blue-600">Download a pre-filled sample CSV with the exact column headers required.</p>
+                </div>
+              </div>
+              <button
+                onClick={() => api.templates.download(type)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-colors ${cfg.btnPrimary}`}
+              >
+                <Download size={11} />
+                Download Template
+              </button>
+            </div>
+
             <div className="flex items-start gap-2 p-3 bg-amber-50 rounded-lg border border-amber-100">
               <AlertTriangle size={13} className="text-amber-500 mt-0.5 flex-shrink-0" />
               <p className="text-xs text-amber-700">

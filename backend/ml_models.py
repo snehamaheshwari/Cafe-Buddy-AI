@@ -385,66 +385,155 @@ def cancellation_risk_analysis(pos_data: list) -> dict:
 # ─── 5. Cross-sell Recommendations ────────────────────────────────────────────
 
 def cross_sell_recommendations(pos_data: list, top_n: int = 10) -> list:
-    """Return top cross-sell rules sorted by lift."""
-    cs_obj = _load("cross_sell_rules.pkl")
-    rules  = cs_obj["rules"]
+    """Return top cross-sell rules sorted by lift.
 
-    # Gather items actually present in POS data
-    pos_items = {r.get("item_name", "").lower().strip() for r in pos_data}
+    Primary source: pre-trained Apriori rules from cross_sell_rules.pkl.
+    Fallback: mine co-occurrence rules directly from POS order data so the
+    section is never empty when data is uploaded.
+    """
+    try:
+        cs_obj = _load("cross_sell_rules.pkl")
+        rules  = cs_obj.get("rules", [])
+    except Exception:
+        rules = []
 
-    enriched = []
-    for rule in rules:
-        enriched.append({
-            "antecedent":  rule.get("antecedent", ""),
-            "consequent":  rule.get("consequent", ""),
-            "support":     round(rule.get("support", 0) * 100, 1),
-            "confidence":  round(rule.get("confidence", 0) * 100, 1),
-            "lift":        round(rule.get("lift", 1.0), 2),
-        })
+    enriched = [
+        {
+            "antecedent": rule.get("antecedent", ""),
+            "consequent": rule.get("consequent", ""),
+            "support":    round(rule.get("support",    0) * 100, 1),
+            "confidence": round(rule.get("confidence", 0) * 100, 1),
+            "lift":       round(rule.get("lift", 1.0),           2),
+        }
+        for rule in rules
+        if rule.get("antecedent") and rule.get("consequent")
+    ]
+    result = sorted(enriched, key=lambda x: -x["lift"])[:top_n]
 
-    # Sort by lift descending, return top N
-    return sorted(enriched, key=lambda x: -x["lift"])[:top_n]
+    # Fallback: compute directly from POS co-occurrence when model returns nothing
+    if not result and pos_data:
+        result = _compute_cross_sell_from_pos(pos_data, top_n)
+
+    return result
+
+
+def _compute_cross_sell_from_pos(pos_data: list, top_n: int = 10) -> list:
+    """Mine item co-occurrence association rules from POS order data.
+
+    Groups items by order_id (same bill = bought together), then computes
+    support, confidence, and lift for every ordered pair.
+    """
+    from itertools import combinations as _comb
+
+    orders: dict = defaultdict(set)
+    for r in pos_data:
+        oid  = r.get("order_id", "")
+        item = r.get("item_name", "").strip()
+        if oid and item:
+            orders[oid].add(item)
+
+    if not orders:
+        return []
+
+    total = len(orders)
+    item_freq: dict = defaultdict(int)
+    pair_freq: dict = defaultdict(int)
+
+    for items in orders.values():
+        for it in items:
+            item_freq[it] += 1
+        for a, b in _comb(sorted(items), 2):
+            pair_freq[(a, b)] += 1
+
+    min_freq = max(3, int(total * 0.005))   # at least 0.5% support
+    rules = []
+    for (a, b), freq in pair_freq.items():
+        if freq < min_freq:
+            continue
+        support = freq / total
+        for ant, con in [(a, b), (b, a)]:
+            conf = freq / max(item_freq[ant], 1)
+            lift = conf / max(item_freq[con] / total, 1e-9)
+            if conf >= 0.10 and lift >= 1.05:
+                rules.append({
+                    "antecedent": ant,
+                    "consequent": con,
+                    "support":    round(support * 100, 1),
+                    "confidence": round(conf    * 100, 1),
+                    "lift":       round(lift,           2),
+                })
+
+    return sorted(rules, key=lambda x: -x["lift"])[:top_n]
 
 
 # ─── 6. Dynamic Pricing Suggestions ───────────────────────────────────────────
 
 def dynamic_pricing_suggestions(pos_data: list) -> list:
-    """Compute price adjustment suggestions using demand elasticity model."""
-    dp_obj      = _load("dynamic_pricing.pkl")
-    elasticities = dp_obj["elasticities"]  # {'Dine-In': {'orders_per_pp_discount': -0.006, 'intercept': 6.81}}
+    """Compute optimal price adjustment using demand elasticity.
+
+    Finds the ΔP that maximises:
+        R(ΔP) = (avg_bill + ΔP) × (daily_orders + slope × ΔP)
+    Setting dR/d(ΔP) = 0 gives:
+        ΔP* = –(daily_orders + slope × avg_bill) / (2 × slope)
+    (slope is negative ⟹ ΔP* > 0 when demand is elastic downward).
+    """
+    dp_obj       = _load("dynamic_pricing.pkl")
+    elasticities = dp_obj["elasticities"]
 
     if not pos_data:
         return []
 
-    # Current avg bill per platform
-    plat_rev: dict  = defaultdict(float)
-    plat_cnt: dict  = defaultdict(int)
+    # Aggregate per-platform: total revenue, count, unique days
+    plat_rev:   dict = defaultdict(float)
+    plat_cnt:   dict = defaultdict(int)
+    plat_dates: dict = defaultdict(set)
     for r in pos_data:
         plat = r.get("platform", "Dine-in").strip()
-        plat_rev[plat] += r.get("bill_amount", r.get("revenue", 0))
-        plat_cnt[plat] += 1
+        plat_rev[plat]  += r.get("bill_amount", r.get("revenue", 0))
+        plat_cnt[plat]  += 1
+        d = r.get("date", "")
+        if d:
+            plat_dates[plat].add(d)
 
     suggestions = []
     for plat, elast in elasticities.items():
         if plat_cnt.get(plat, 0) == 0:
             continue
-        avg_bill = plat_rev[plat] / plat_cnt[plat]
-        orders   = plat_cnt[plat]
-        slope    = elast.get("orders_per_pp_discount", 0)
-        # Slope is negative: each ₹1 increase in price → slope change in daily orders
-        # Suggest 5% price increase and show order impact
-        price_increase = round(avg_bill * 0.05, 0)
-        order_impact   = round(slope * price_increase, 1)  # negative means fewer orders
-        rev_impact     = round((price_increase * orders / 30) + (order_impact * avg_bill / 30), 0)
+
+        avg_bill     = plat_rev[plat] / plat_cnt[plat]
+        total_orders = plat_cnt[plat]
+        n_days       = max(len(plat_dates.get(plat, set())), 1)
+        daily_orders = total_orders / n_days
+        slope        = elast.get("orders_per_pp_discount", 0)
+
+        # Revenue-maximising price increase via calculus:
+        # R(ΔP) = (P + ΔP)(Q + s·ΔP)  where s < 0
+        # dR/dΔP = Q + s·P + 2s·ΔP = 0  ⟹  ΔP* = –(Q + s·P)/(2s)
+        if slope < 0:
+            dp_optimal = -(daily_orders + slope * avg_bill) / (2 * slope)
+            # Clamp to [1%, 25%] of avg_bill — keep it practical
+            dp_optimal = max(avg_bill * 0.01, min(dp_optimal, avg_bill * 0.25))
+        else:
+            dp_optimal = 0.0  # no negative elasticity → hold price
+
+        price_increase = round(dp_optimal, 0)
+        pct_increase   = round(price_increase / max(avg_bill, 1) * 100, 1)
+        order_impact   = round(slope * price_increase, 1) if slope < 0 else 0.0
+        # Monthly revenue impact: (extra revenue per order × orders/day) × 30 days
+        rev_impact = round(
+            (price_increase * daily_orders + order_impact * avg_bill) * (n_days / 30),
+            0,
+        )
+
         suggestions.append({
-            "platform":        plat,
-            "avg_bill":        round(avg_bill, 0),
-            "orders":          orders,
-            "suggested_increase": f"+5% (₹{price_increase:.0f})",
-            "order_impact":    f"{order_impact:+.1f} orders/day",
-            "revenue_impact":  f"{'+' if rev_impact >= 0 else ''}₹{abs(int(rev_impact))}/month",
-            "elasticity_slope": slope,
-            "recommendation":  "Increase" if rev_impact > 0 else "Hold",
+            "platform":           plat,
+            "avg_bill":           round(avg_bill, 0),
+            "orders":             total_orders,
+            "suggested_increase": f"+{pct_increase:.1f}% (₹{price_increase:.0f})",
+            "order_impact":       f"{order_impact:+.1f} orders/day",
+            "revenue_impact":     f"{'+' if rev_impact >= 0 else ''}₹{abs(int(rev_impact))}/month",
+            "elasticity_slope":   slope,
+            "recommendation":     "Increase" if rev_impact > 0 else "Hold",
         })
 
     return sorted(suggestions, key=lambda x: -x["orders"])

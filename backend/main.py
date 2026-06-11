@@ -421,30 +421,34 @@ def _generate_decisions(data: list) -> list:
     if not data:
         return []
 
-    items = _item_stats(data)
-    dates = sorted(set(r["date"] for r in data))
-    n_days = max(len(dates), 1)
+    items    = _item_stats(data)
+    dates    = sorted(set(r["date"] for r in data))
+    n_days   = max(len(dates), 1)
     decisions = []
     did = 1
 
-    # Pricing — top revenue items with good margin
+    # ── Pricing: top revenue items with healthy margin ─────────────────────────
     for item in items[:5]:
         if item["margin_pct"] > 45 and len(decisions) < 2:
-            monthly = int(item["revenue"] / n_days * 30 * 0.08)
+            # Graduated price increase: higher margin → more room to raise
+            # margin 45-55 → ~6%, 55-65 → ~9%, >65 → ~12%
+            price_inc_pct = min(15, max(5, round((item["margin_pct"] - 35) / 5)))
+            monthly = int(item["revenue"] / n_days * 30 * (price_inc_pct / 100))
             decisions.append({
                 "id": did, "type": "pricing", "priority": "high",
-                "title": f"Increase '{item['name']}' price by 8%",
+                "title": f"Increase '{item['name']}' price by {price_inc_pct}%",
                 "rationale": (f"Top revenue contributor (₹{item['revenue']:,.0f} total, "
                               f"{item['qty']:.0f} units sold). "
-                              f"Margin at {item['margin_pct']:.1f}% supports a price increase without demand erosion."),
-                "impact": f"+₹{monthly:,}/month",
-                "confidence": min(92, 60 + min(28, int(item['margin_pct'] / 2))),
+                              f"Margin at {item['margin_pct']:.1f}% supports a price increase "
+                              f"without demand erosion."),
+                "impact": f"+₹{monthly:,}/month estimated additional revenue",
+                "confidence": min(92, 60 + min(28, int(item["margin_pct"] / 2))),
                 "source": "POS Data Analysis",
                 "status": "pending", "category": "Revenue Optimization",
             })
             did += 1
 
-    # Menu optimisation — low margin items
+    # ── Menu: low margin items ─────────────────────────────────────────────────
     low_items = sorted(items, key=lambda x: x["margin_pct"])
     for item in low_items[:2]:
         if item["margin_pct"] < 30:
@@ -455,30 +459,51 @@ def _generate_decisions(data: list) -> list:
                               f"Total revenue ₹{item['revenue']:,.0f} over {n_days} days. "
                               f"Consider recipe cost reduction or bundling."),
                 "impact": "Free kitchen capacity for high-margin items",
-                "confidence": min(85, 55 + min(25, int(max(0, 30 - item['margin_pct']) * 0.8))),
+                "confidence": min(85, 55 + min(25, int(max(0, 30 - item["margin_pct"]) * 0.8))),
                 "source": "POS Data Analysis",
                 "status": "pending", "category": "Menu Optimization",
             })
             did += 1
 
-    # Marketing — top platform
+    # ── Marketing: top platform with actual trend ──────────────────────────────
     platforms = _platform_breakdown(data)
     if platforms:
-        top = max(platforms, key=lambda x: x["revenue"])
+        top     = max(platforms, key=lambda x: x["revenue"])
         monthly = int(top["revenue"] / n_days * 30 * 0.15)
+
+        # Compute actual growth rate of this platform (recent half vs older half)
+        half = len(dates) // 2
+        if half > 0:
+            recent_set = set(dates[half:])
+            older_set  = set(dates[:half])
+            r_rev = sum(r["revenue"] for r in data
+                        if r["date"] in recent_set and r.get("platform","") == top["platform"])
+            o_rev = sum(r["revenue"] for r in data
+                        if r["date"] in older_set  and r.get("platform","") == top["platform"])
+            if o_rev > 0:
+                growth_pct = (r_rev / o_rev - 1) * 100
+                trend_str  = f"showing {growth_pct:+.0f}% revenue trend"
+            else:
+                trend_str  = "top revenue channel"
+        else:
+            trend_str = "top revenue channel"
+
         decisions.append({
             "id": did, "type": "marketing", "priority": "medium",
             "title": f"Boost promotions on {top['platform']} — top channel",
             "rationale": (f"{top['platform']} generated ₹{top['revenue']:,.0f} total "
-                          f"({top['orders']} orders). Targeted promo campaigns can grow this channel by 12–18%."),
-            "impact": f"+₹{monthly:,}/month",
-            "confidence": min(88, 65 + min(20, int(top['revenue'] / max(sum(p['revenue'] for p in platforms), 1) * 40))),
+                          f"({top['orders']} orders, {trend_str}). "
+                          f"Targeted promo campaigns can increase order frequency."),
+            "impact": f"+₹{monthly:,}/month from 15% channel growth",
+            "confidence": min(88, 65 + min(20, int(
+                top["revenue"] / max(sum(p["revenue"] for p in platforms), 1) * 40
+            ))),
             "source": "POS Data Analysis",
             "status": "pending", "category": "Marketing",
         })
         did += 1
 
-    # Staffing — weekend vs weekday
+    # ── Staffing: weekend vs weekday ───────────────────────────────────────────
     weekend_rev, weekend_days_set = 0.0, set()
     weekday_rev, weekday_days_set = 0.0, set()
     for r in data:
@@ -495,21 +520,30 @@ def _generate_decisions(data: list) -> list:
         w_avg = weekend_rev / len(weekend_days_set)
         d_avg = weekday_rev / len(weekday_days_set)
         if w_avg > d_avg * 1.15:
+            # Estimate service delay from order burst ratio
+            burst_pct       = (w_avg / d_avg - 1) * 100
+            estimated_delay = max(10, min(35, int(burst_pct * 0.55)))
+
+            # Revenue protection: 10% of approx monthly weekend revenue
+            monthly_wknd  = w_avg * 8   # 4 weekends × 2 days
+            protected_rev = int(monthly_wknd * 0.10)
+
             decisions.append({
                 "id": did, "type": "staffing", "priority": "medium",
                 "title": "Increase weekend staffing (+2 staff, 6–10 PM)",
                 "rationale": (f"Weekend revenue averages ₹{w_avg:,.0f}/day vs "
                               f"₹{d_avg:,.0f}/day on weekdays — "
                               f"{((w_avg / d_avg) - 1) * 100:.0f}% higher. "
-                              f"Current capacity risks 18-min service delays."),
-                "impact": "+₹8,400 weekend revenue protection",
+                              f"Current capacity risks ~{estimated_delay}-min service delays "
+                              f"during weekend peak hours."),
+                "impact": f"+₹{protected_rev:,}/month weekend revenue protection",
                 "confidence": min(90, 70 + min(15, int(abs(w_avg - d_avg) / max(d_avg, 1) * 30))),
                 "source": "POS Data Analysis",
                 "status": "pending", "category": "Operations",
             })
             did += 1
 
-    # Apply any approve/reject overrides
+    # Apply approve/reject overrides
     for d in decisions:
         if d["id"] in _decision_overrides:
             d["status"] = _decision_overrides[d["id"]]
@@ -523,22 +557,55 @@ def _calc_kpis(data: list) -> list:
     dates = sorted(set(r["date"] for r in data))
     last, prev = dates[-1], (dates[-2] if len(dates) > 1 else None)
 
-    today_rev  = sum(r["revenue"] for r in data if r["date"] == last)
-    prev_rev   = sum(r["revenue"] for r in data if r["date"] == prev) if prev else 0
+    today_rev = sum(r["revenue"] for r in data if r["date"] == last)
+    prev_rev  = sum(r["revenue"] for r in data if r["date"] == prev) if prev else 0
     rev_change = (f"+{((today_rev / prev_rev) - 1) * 100:.1f}%"
                   if prev_rev > 0 else "—")
 
-    total_rev  = sum(r["revenue"] for r in data)
-    total_cost = sum(r["cost"]    for r in data)
+    total_rev  = sum(r["revenue"]  for r in data)
+    total_cost = sum(r["cost"]     for r in data)
     total_qty  = sum(r["quantity"] for r in data)
     avg_ov     = total_rev / max(len(data), 1)
     food_pct   = total_cost / max(total_rev, 1) * 100
 
+    # Compute period-over-period trends by splitting date range in half
+    half = len(dates) // 2
+    if half > 0:
+        recent_dates = set(dates[half:])
+        older_dates  = set(dates[:half])
+        recent_data  = [r for r in data if r["date"] in recent_dates]
+        older_data   = [r for r in data if r["date"] in older_dates]
+
+        # AOV trend
+        r_rev = sum(r["revenue"] for r in recent_data)
+        o_rev = sum(r["revenue"] for r in older_data)
+        r_cnt = max(len(recent_data), 1)
+        o_cnt = max(len(older_data),  1)
+        r_aov, o_aov = r_rev / r_cnt, o_rev / o_cnt
+        aov_change = (f"{((r_aov / o_aov) - 1) * 100:+.1f}%" if o_aov > 0 else "—")
+        aov_trend  = "up" if r_aov >= o_aov else "down"
+
+        # Food cost % trend
+        r_cost_pct = (sum(r["cost"] for r in recent_data) / max(r_rev, 1)) * 100
+        o_cost_pct = (sum(r["cost"] for r in older_data)  / max(o_rev,  1)) * 100
+        fc_delta   = r_cost_pct - o_cost_pct
+        food_change = f"{fc_delta:+.1f}%"
+        food_trend  = "down" if fc_delta <= 0 else "up"  # lower food cost = good
+
+        # Qty sold trend
+        r_qty = sum(r["quantity"] for r in recent_data)
+        o_qty = sum(r["quantity"] for r in older_data)
+        qty_change = (f"{((r_qty / o_qty) - 1) * 100:+.1f}%" if o_qty > 0 else "—")
+        qty_trend  = "up" if r_qty >= o_qty else "down"
+    else:
+        aov_change = food_change = qty_change = "—"
+        aov_trend  = food_trend  = qty_trend  = "neutral"
+
     return [
-        {"name": "Today's Revenue",  "value": f"₹{today_rev:,.0f}",  "change": rev_change, "trend": "up" if today_rev >= prev_rev else "down"},
-        {"name": "Avg Order Value",  "value": f"₹{avg_ov:,.0f}",     "change": "+4.1%",   "trend": "up"},
-        {"name": "Food Cost %",      "value": f"{food_pct:.1f}%",     "change": "-2.1%",   "trend": "down"},
-        {"name": "Total Items Sold", "value": f"{total_qty:,.0f}",    "change": "+8.7%",   "trend": "up"},
+        {"name": "Today's Revenue",  "value": f"₹{today_rev:,.0f}",  "change": rev_change,  "trend": "up" if today_rev >= prev_rev else "down"},
+        {"name": "Avg Order Value",  "value": f"₹{avg_ov:,.0f}",     "change": aov_change,  "trend": aov_trend},
+        {"name": "Food Cost %",      "value": f"{food_pct:.1f}%",     "change": food_change, "trend": food_trend},
+        {"name": "Total Items Sold", "value": f"{total_qty:,.0f}",    "change": qty_change,  "trend": qty_trend},
         {"name": "Data Records",     "value": f"{len(data):,}",       "change": f"{len(dates)} days", "trend": "up"},
         {"name": "Date Range",       "value": f"{dates[0]} → {dates[-1]}", "change": f"{len(dates)} days", "trend": "neutral"},
     ]
@@ -607,6 +674,111 @@ def me(request: Request = None):
         "permissions": list(role.get("permissions", [])),
     }
 
+
+# ─────────────────────────────────────────────
+# DATA TEMPLATE DOWNLOAD
+# ─────────────────────────────────────────────
+
+_TEMPLATES = {
+    "financial": {
+        "filename": "cafe_buddy_financial_template.csv",
+        "headers": [
+            "Date", "Monthly Revenue", "Gross Margin %", "Net Profit",
+            "Food Cost %", "Labor Cost %", "Electricity", "Rent",
+            "Marketing Spend", "Packaging Cost", "Platform Commission",
+        ],
+        "rows": [
+            ["2024-01-01","2500000","68.5","450000","31.5","19.8","52000","350000","38000","58000","145000"],
+            ["2024-02-01","2750000","70.2","520000","29.8","18.5","49000","350000","42000","63000","162000"],
+            ["2024-03-01","3100000","69.0","610000","31.0","20.1","55000","350000","45000","71000","180000"],
+        ],
+    },
+    "pos": {
+        "filename": "cafe_buddy_pos_template.csv",
+        "headers": [
+            "Date","Item Name / Product","Quantity / Qty","Price / Rate",
+            "Revenue / Total","Category / Type","Platform / Channel",
+            "Cost / COGS","Order ID / Bill No","GST Amount",
+            "Discount","Payment Mode","Hour / Time",
+        ],
+        "rows": [
+            ["2024-01-15","Cappuccino","2","120","240","Hot Coffee","Dine-in","36","CB-240115-001","12","0","UPI","10"],
+            ["2024-01-15","Espresso","1","80","80","Hot Coffee","Zomato","24","CB-240115-002","4","0","Online","11"],
+            ["2024-01-15","Pasta Carbonara","1","320","320","Pasta","Dine-in","128","CB-240115-003","16","0","Cash","13"],
+            ["2024-01-16","Cold Coffee","3","150","450","Cold Beverages","Swiggy","45","CB-240116-001","22","30","Online","16"],
+        ],
+    },
+    "customer": {
+        "filename": "cafe_buddy_customer_template.csv",
+        "headers": [
+            "Customer Name","Phone / Contact","Birthday / DOB","Visit Frequency",
+            "Favourite Items","Avg Order Value","Feedback / Rating",
+            "Preferred Visit Time","Platform Source","Loyalty Points","Gender","Age Group",
+        ],
+        "rows": [
+            ["Rahul Sharma","9876543210","15-08-1990","4","Cappuccino, Croissant","450","4.5","Morning (8-11 AM)","Walk-in","120","Male","25-34"],
+            ["Priya Gupta","9876543211","22-03-1985","8","Cold Coffee, Pasta","620","5.0","Afternoon (2-5 PM)","Zomato","280","Female","35-44"],
+            ["Arjun Patel","9876543212","07-11-1998","2","Espresso, Sandwich","280","3.5","Evening (5-8 PM)","Swiggy","40","Male","18-24"],
+        ],
+    },
+    "reviews": {
+        "filename": "cafe_buddy_reviews_template.csv",
+        "headers": [
+            "Review_Text","Sentiment_Label","Review_ID","Source",
+            "Review_Date","Cafe_Location","Visit_Type","Rating",
+        ],
+        "rows": [
+            ["Amazing coffee and cozy ambiance! Will definitely come back.","positive","RVW001","Google","2024-01-15","Koramangala, Bengaluru","Dine-in","5"],
+            ["Service was a bit slow but the food quality was excellent.","neutral","RVW002","Zomato","2024-01-16","Koramangala, Bengaluru","Takeaway","3"],
+            ["Cold coffee was watery and overpriced. Disappointed.","negative","RVW003","Google","2024-01-17","Koramangala, Bengaluru","Dine-in","2"],
+        ],
+    },
+    "menu": {
+        "filename": "cafe_buddy_menu_template.csv",
+        "headers": [
+            "Item / Item Name","Category","Base Price","Season",
+            "Available Dayparts","Veg / Non-Veg","SKU","Notes",
+        ],
+        "rows": [
+            ["Espresso","Hot Coffee","80","YR","M,A,E","Veg","CB-001",""],
+            ["Cappuccino","Hot Coffee","120","YR","M,L,A,E,LE","Veg","CB-002","Double shot available"],
+            ["Cold Coffee","Cold Beverages","150","YR","M,L,A,E,LE","Veg","CB-003",""],
+            ["Club Sandwich","Snacks","220","YR","M,L,A","Veg","CB-050",""],
+            ["Chicken Burger","Burgers","280","YR","L,E,LE","Non-Veg","CB-051",""],
+            ["Pasta Carbonara","Pasta","320","YR","L,E,LE","Non-Veg","CB-060",""],
+            ["Mango Smoothie","Cold Beverages","180","S","M,A,E","Veg","CB-030","Seasonal - Summer only"],
+        ],
+    },
+}
+
+
+@app.get("/api/templates/{data_type}")
+def download_template(data_type: str):
+    """Return a ready-to-fill CSV template for the given dataset type.
+    Headers match the column aliases accepted by each upload endpoint.
+    Sample rows show the exact format expected."""
+    import csv as _csv
+    if data_type not in _TEMPLATES:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown data type '{data_type}'. Valid types: {list(_TEMPLATES.keys())}",
+        )
+    tmpl = _TEMPLATES[data_type]
+    buf = io.StringIO()
+    writer = _csv.writer(buf)
+    writer.writerow(tmpl["headers"])
+    for row in tmpl["rows"]:
+        writer.writerow(row)
+    # UTF-8-BOM so Excel opens it without encoding issues
+    csv_bytes = ("﻿" + buf.getvalue()).encode("utf-8")
+    return Response(
+        content=csv_bytes,
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f'attachment; filename="{tmpl["filename"]}"',
+            "Cache-Control": "no-cache",
+        },
+    )
 
 @app.post("/api/auth/logout")
 def logout(request: Request = None):

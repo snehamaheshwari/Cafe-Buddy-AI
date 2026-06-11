@@ -134,6 +134,20 @@ export const api = {
     dynamicPricing:   () => get('/ml/dynamic-pricing'),
     modelComparison:  () => get('/ml/model-comparison'),
   },
+  templates: {
+    /**
+     * Trigger a browser download of the CSV template for the given dataset type.
+     * Types: 'financial' | 'pos' | 'customer' | 'reviews' | 'menu'
+     */
+    download: (type: string): void => {
+      const a = document.createElement('a')
+      a.href = `/api/templates/${type}`
+      a.download = `cafe_buddy_${type}_template.csv`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+    },
+  },
   peers: {
     cities:      ()                             => get<any>('/peers/cities'),
     areas:       (city: string)                 => get<any>(`/peers/areas?city=${encodeURIComponent(city)}`),
