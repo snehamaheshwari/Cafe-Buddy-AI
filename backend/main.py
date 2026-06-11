@@ -583,6 +583,31 @@ def login(req: LoginRequest, request: Request = None):
         "token":       f"demo-token-{result['username']}",
     }
 
+@app.get("/api/auth/me")
+def me(request: Request = None):
+    """
+    Return the current user's up-to-date role and permissions.
+    The frontend calls this on app startup to refresh stale localStorage data.
+    Username is read from the X-Username header (set by apiFetch / the frontend).
+    """
+    username = request.headers.get("X-Username", "") if request else ""
+    if not username:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    user_info = _rs.get_user(username)
+    if not user_info:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="User not found")
+    role = _rs.get_role(user_info.get("role_id", "viewer")) or {}
+    return {
+        "username":    username,
+        "full_name":   user_info.get("full_name", username),
+        "role_id":     role.get("id", "viewer"),
+        "role_name":   role.get("name", "Viewer"),
+        "permissions": list(role.get("permissions", [])),
+    }
+
+
 @app.post("/api/auth/logout")
 def logout(request: Request = None):
     username = request.headers.get("X-Username", "anonymous") if request else "anonymous"
