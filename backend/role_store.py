@@ -132,6 +132,18 @@ def _load() -> None:
     for uname, user in _DEFAULT_USERS.items():
         _users.setdefault(uname, dict(user))
 
+    # ── Migration: ensure admin always has all required permissions ────────────
+    # This handles existing installations where roles.json was saved before
+    # audit_logs (or future new permissions) were added.
+    _changed = False
+    for perm in ["role_management", "audit_logs"]:
+        if perm not in _roles["admin"].get("permissions", []):
+            _roles["admin"].setdefault("permissions", []).append(perm)
+            _changed = True
+    if _changed:
+        _save()
+    # ───────────────────────────────────────────────────────────────────────────
+
     _loaded = True
 
 
