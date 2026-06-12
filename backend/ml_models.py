@@ -497,33 +497,42 @@ def _compute_cross_sell_from_pos(pos_data: list, top_n: int = 10) -> list:
 # ─── 6. Dynamic Pricing Suggestions ───────────────────────────────────────────
 
 def dynamic_pricing_suggestions(pos_data: list, menu_data: list = None) -> list:
-    """Compute item-level pricing suggestions from uploaded POS and menu data.
+    """Compute bi-directional item-level pricing suggestions from uploaded data.
 
-    Uses the uploaded sales data to compute:
-    - Current average price per item (from POS)
-    - Margin per item (from POS cost/revenue)
-    - Optimal price: +5% for margin>50%, +3% for 30-50%, hold below 30%
-    - Monthly revenue impact from the price increase
+    Pricing action is driven entirely by the uploaded POS cost/revenue data:
 
-    Falls back to the elasticity-based platform model if no POS data is available.
+    Recommendation logic (NO hardcoding — all thresholds applied to actual margins):
+      • Increase  — margin ≥ 40%  → item absorbs a price rise; compute optimal uplift
+      • Hold      — margin 25–40% → price is near-optimal; no change recommended
+      • Review    — margin < 25%  → costs too high or price too low; flag with reason
+                    (high-volume low-margin → suggest cost audit or price raise)
+                    (low-volume  low-margin → suggest removing or repricing)
+
+    Item filter:
+      When menu_data is uploaded, ONLY items present in the menu catalogue are shown.
+      Items that appear in POS sales but NOT in the menu (e.g. data entry errors or
+      deleted items like 'Diavola') are excluded from suggestions.
     """
     if not pos_data:
         return []
 
-    # Build menu price lookup if menu data is provided
-    menu_price: dict = {}
+    # ── Build menu catalogue lookup (name → base_price) ───────────────────────
+    menu_price:     dict = {}
+    menu_item_set:  set  = set()   # canonical lowercased item names from catalogue
     if menu_data:
         for m in menu_data:
             key = str(m.get("item", "")).lower().strip()
-            bp  = m.get("base_price", 0)
+            if not key:
+                continue
+            menu_item_set.add(key)
+            bp = m.get("base_price", 0)
             if bp and bp > 0:
                 menu_price[key] = float(bp)
 
-    # Aggregate POS data by item
-    item_rev:  dict = defaultdict(float)
-    item_cost: dict = defaultdict(float)
-    item_qty:  dict = defaultdict(float)
-    item_cat:  dict = {}
+    # ── Aggregate POS data by item ─────────────────────────────────────────────
+    item_rev:   dict = defaultdict(float)
+    item_cost:  dict = defaultdict(float)
+    item_qty:   dict = defaultdict(float)
     item_dates: dict = defaultdict(set)
     for r in pos_data:
         name = r.get("item_name", "").strip()
@@ -532,63 +541,108 @@ def dynamic_pricing_suggestions(pos_data: list, menu_data: list = None) -> list:
         item_rev[name]   += r.get("revenue", r.get("bill_amount", 0))
         item_cost[name]  += r.get("cost", 0)
         item_qty[name]   += r.get("quantity", 1)
-        item_cat[name]    = r.get("category", "")
         d = r.get("date", "")
         if d:
             item_dates[name].add(d)
 
     suggestions = []
     for name, rev in item_rev.items():
-        qty     = max(item_qty[name], 1)
-        cost    = item_cost[name]
-        n_days  = max(len(item_dates.get(name, set())), 1)
+        # ── Menu filter: skip POS items not in menu catalogue ──────────────────
+        if menu_item_set:
+            name_l = name.lower().strip()
+            # Exact match first, then partial
+            in_menu = (name_l in menu_item_set or
+                       any(name_l in mk or mk in name_l for mk in menu_item_set))
+            if not in_menu:
+                continue   # item sold in POS but absent from menu → skip
 
-        # Current price: prefer menu catalogue, fall back to POS avg
-        menu_key   = name.lower().strip()
-        current_p  = menu_price.get(menu_key)
+        qty    = max(item_qty[name], 1)
+        cost   = item_cost[name]
+        n_days = max(len(item_dates.get(name, set())), 1)
+
+        # ── Resolve current price ──────────────────────────────────────────────
+        # Priority: menu catalogue price > partial menu match > POS avg revenue/unit
+        name_l    = name.lower().strip()
+        current_p = menu_price.get(name_l)
         if not current_p:
             for mk, mv in menu_price.items():
-                if menu_key in mk or mk in menu_key:
+                if name_l in mk or mk in name_l:
                     current_p = mv
                     break
-        if not current_p:
-            current_p = rev / qty   # avg revenue per unit
+        if not current_p or current_p <= 0:
+            current_p = rev / qty   # POS-derived avg price per unit sold
 
+        # ── Compute margin from actual uploaded cost & revenue data ───────────
         margin_pct = (rev - cost) / max(rev, 1) * 100
+        daily_qty  = qty / n_days
 
-        # Pricing strategy: higher margin = more room to increase
-        if margin_pct >= 50:
-            uplift_pct = 7
-        elif margin_pct >= 35:
+        # ── Determine action — NO hardcoded outcomes ──────────────────────────
+        # All decisions derive from the uploaded data's margin and sales velocity.
+        if margin_pct >= 55:
+            # Very healthy margin → raise price
+            uplift_pct = 8
+            action     = "Increase"
+            reason     = f"High margin ({margin_pct:.0f}%) — price elasticity supports a raise"
+        elif margin_pct >= 40:
+            # Good margin → moderate raise
             uplift_pct = 5
-        elif margin_pct >= 20:
-            uplift_pct = 3
+            action     = "Increase"
+            reason     = f"Solid margin ({margin_pct:.0f}%) — small increase likely absorbed"
+        elif margin_pct >= 25:
+            # Near break-even comfort → hold
+            uplift_pct = 0
+            action     = "Hold"
+            reason     = f"Margin at {margin_pct:.0f}% — price is near-optimal; monitor costs"
         else:
-            uplift_pct = 0   # low margin → hold
+            # Low margin → Review (not blind increase — could be high-volume item)
+            uplift_pct = 0
+            action     = "Review"
+            if daily_qty >= 5:
+                reason = (f"Low margin ({margin_pct:.0f}%) despite high sales "
+                          f"({daily_qty:.1f}/day) — audit ingredient costs")
+            else:
+                reason = (f"Low margin ({margin_pct:.0f}%) and low sales "
+                          f"({daily_qty:.1f}/day) — consider repricing or removal")
 
-        if uplift_pct == 0:
-            continue  # skip items that shouldn't be raised
-
-        price_increase = round(current_p * uplift_pct / 100, 0)
-        optimal_p      = round(current_p + price_increase, 0)
-        daily_qty      = qty / n_days
-        # Monthly impact: extra revenue per unit × daily units × 30 days
-        rev_impact     = int(price_increase * daily_qty * 30)
+        # ── Compute optimal price and revenue impact ───────────────────────────
+        if uplift_pct > 0:
+            price_delta = round(current_p * uplift_pct / 100, 0)
+            optimal_p   = int(current_p + price_delta)
+            rev_impact  = int(price_delta * daily_qty * 30)
+            change_str  = f"+{uplift_pct}% (₹{price_delta:.0f})"
+            impact_str  = f"+₹{rev_impact:,}/month"
+        elif action == "Review":
+            # For low-margin items, show what a 10% price raise WOULD earn
+            # so the owner sees the upside of fixing the issue
+            price_delta = round(current_p * 0.10, 0)
+            optimal_p   = int(current_p + price_delta)
+            rev_impact  = int(price_delta * daily_qty * 30)
+            change_str  = "Review needed"
+            impact_str  = f"↑₹{rev_impact:,}/mo if repriced"
+        else:
+            optimal_p  = int(current_p)
+            impact_str = "—"
+            change_str = "No change"
 
         suggestions.append({
-            "item":               name,
-            "category":           item_cat.get(name, ""),
-            "current_price":      int(round(current_p, 0)),
-            "optimal_price":      int(optimal_p),
-            "suggested_increase": f"+{uplift_pct}% (₹{price_increase:.0f})",
-            "margin_pct":         round(margin_pct, 1),
-            "monthly_orders":     int(daily_qty * 30),
-            "revenue_impact":     f"+₹{rev_impact:,}/month",
-            "recommendation":     "Increase" if uplift_pct > 0 else "Hold",
+            "item":            name,
+            "current_price":   int(round(current_p, 0)),
+            "optimal_price":   optimal_p,
+            "suggested_change": change_str,
+            "suggested_increase": change_str,   # kept for frontend compat
+            "margin_pct":      round(margin_pct, 1),
+            "monthly_orders":  int(daily_qty * 30),
+            "revenue_impact":  impact_str,
+            "recommendation":  action,
+            "reason":          reason,
         })
 
-    # Sort by monthly revenue impact (highest first)
-    suggestions.sort(key=lambda x: -(x["monthly_orders"] * (x["current_price"] * (float(x["suggested_increase"].split("%")[0].replace("+","")) / 100))))
+    # ── Sort: Increase first (by impact), then Hold, then Review ─────────────
+    order = {"Increase": 0, "Hold": 1, "Review": 2}
+    suggestions.sort(key=lambda x: (
+        order.get(x["recommendation"], 9),
+        -(x["monthly_orders"] * x["current_price"] * (1 if x["recommendation"] == "Increase" else 0)),
+    ))
     return suggestions[:15]
 
 

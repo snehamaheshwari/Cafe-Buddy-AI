@@ -435,37 +435,55 @@ export default function AIMLIntelligence() {
                       <th>Item</th>
                       <th>Current ₹</th>
                       <th>Optimal ₹</th>
-                      <th>Increase</th>
+                      <th>Change</th>
                       <th>Monthly Impact</th>
                       <th>Action</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {dynamicRows.map((r: any, idx: number) => (
-                      <tr key={r.item ?? r.platform ?? idx}>
-                        <td className="font-medium text-xs max-w-[120px] truncate">
-                          {r.item ?? r.platform}
-                          {r.category && <span className="text-slate-400 ml-1">· {r.category}</span>}
-                        </td>
-                        <td className="font-mono text-xs text-slate-600">
-                          ₹{r.current_price ?? r.avg_bill}
-                        </td>
-                        <td className="font-mono text-xs text-emerald-600 font-semibold">
-                          ₹{r.optimal_price ?? (r.avg_bill + 10)}
-                        </td>
-                        <td className="text-xs text-emerald-600 font-semibold">
-                          {r.suggested_increase}
-                        </td>
-                        <td className="text-xs font-semibold text-emerald-600">
-                          {r.revenue_impact}
-                        </td>
-                        <td>
-                          <span className={`badge ${r.recommendation === 'Increase' ? 'badge-ok' : 'bg-slate-100 text-slate-600'}`}>
-                            {r.recommendation}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
+                    {dynamicRows.map((r: any, idx: number) => {
+                      const rec: string = r.recommendation ?? ''
+                      const isIncrease = rec === 'Increase'
+                      const isReview   = rec === 'Review'
+                      const isHold     = rec === 'Hold'
+                      const badgeCls   = isIncrease
+                        ? 'badge-ok'
+                        : isReview
+                        ? 'bg-amber-100 text-amber-700'
+                        : 'bg-slate-100 text-slate-500'
+                      const priceCls   = isIncrease
+                        ? 'text-emerald-600'
+                        : isReview
+                        ? 'text-amber-600'
+                        : 'text-slate-500'
+                      return (
+                        <tr key={r.item ?? r.platform ?? idx}>
+                          <td className="font-medium text-xs">
+                            {r.item ?? r.platform}
+                          </td>
+                          <td className="font-mono text-xs text-slate-600">
+                            ₹{r.current_price ?? r.avg_bill}
+                          </td>
+                          <td className={`font-mono text-xs font-semibold ${priceCls}`}>
+                            ₹{r.optimal_price ?? (r.avg_bill + 10)}
+                          </td>
+                          <td className={`text-xs font-semibold ${priceCls}`}>
+                            {r.suggested_change ?? r.suggested_increase}
+                          </td>
+                          <td className={`text-xs font-semibold ${priceCls}`}>
+                            {r.revenue_impact}
+                          </td>
+                          <td>
+                            <span
+                              className={`badge ${badgeCls} cursor-default`}
+                              title={r.reason ?? rec}
+                            >
+                              {rec}
+                            </span>
+                          </td>
+                        </tr>
+                      )
+                    })}
                   </tbody>
                 </table>
               </div>
