@@ -25,7 +25,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: '/data-engineering',label: 'Reports & Insights', icon: BarChart2,   desc: 'Trends & summaries',        permission: 'reports' },
   { to: '/ai-intelligence', label: 'Smart Analytics',icon: TrendingUp,      desc: 'AI-powered predictions',    permission: 'analytics' },
   { to: '/decision-engine', label: 'What To Do Next',icon: Lightbulb,       desc: 'Action recommendations',    permission: 'decision_engine' },
-  { to: '/cafe-os',         label: 'Auto-Pilot Mode',icon: Rocket,          desc: 'Automated operations',      permission: 'auto_pilot' },
+  { to: '/cafe-os',         label: 'AI-Powered Execution', icon: Rocket, desc: 'AI takes approved actions',  permission: 'auto_pilot' },
   { to: '/chatbot',         label: 'Ask Cafe Buddy', icon: MessageCircle,   desc: 'Chat with your AI helper',  permission: 'chatbot' },
   { to: '/peer-comparison', label: 'Market Radar',   icon: Target,          desc: 'Benchmark vs nearby cafés', permission: 'market_radar' },
   { to: '/notifications',   label: 'WhatsApp Alerts',icon: Bell,            desc: 'Free daily summaries',      permission: 'whatsapp_alerts', isWhatsApp: true },

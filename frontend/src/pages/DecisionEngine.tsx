@@ -57,7 +57,7 @@ export default function DecisionEngine() {
 
   return (
     <div>
-      <Header title="Decision Engine" subtitle="AI-generated actionable recommendations for your café operations" />
+      <Header title="What To Do Next" subtitle="Review AI-generated recommendations · Approve to send to AI-Powered Execution" />
       <div className="p-6 space-y-6">
 
         {/* Summary Row */}

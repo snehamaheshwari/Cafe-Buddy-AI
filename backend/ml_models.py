@@ -385,36 +385,64 @@ def cancellation_risk_analysis(pos_data: list) -> dict:
 # ─── 5. Cross-sell Recommendations ────────────────────────────────────────────
 
 def cross_sell_recommendations(pos_data: list, top_n: int = 10) -> list:
-    """Return top cross-sell rules sorted by lift.
+    """Return cross-sell association rules sorted by lift.
 
-    Primary source: pre-trained Apriori rules from cross_sell_rules.pkl.
-    Fallback: mine co-occurrence rules directly from POS order data so the
-    section is never empty when data is uploaded.
+    Strategy:
+    1. Load the pre-trained Apriori model (cross_sell_rules.pkl with 1698 rules).
+    2. If the user has uploaded POS data, filter rules to only show item pairs
+       where BOTH the antecedent AND consequent appear in the user's uploaded items
+       (case-insensitive partial match) — so rules are always relevant to their menu.
+    3. If no model rules match the user's items, fall back to mining co-occurrence
+       rules directly from the user's POS order data.
     """
+    # ── Load pre-trained Apriori model ─────────────────────────────────────────
+    model_rules: list = []
     try:
         cs_obj = _load("cross_sell_rules.pkl")
-        rules  = cs_obj.get("rules", [])
+        raw    = cs_obj.get("rules", [])
+        if isinstance(raw, list):
+            model_rules = [
+                {
+                    "antecedent": r.get("antecedent", ""),
+                    "consequent": r.get("consequent",  ""),
+                    "support":    round(float(r.get("support",    0)) * 100, 1),
+                    "confidence": round(float(r.get("confidence", 0)) * 100, 1),
+                    "lift":       round(float(r.get("lift", 1.0)),           2),
+                }
+                for r in raw
+                if r.get("antecedent") and r.get("consequent")
+            ]
     except Exception:
-        rules = []
+        model_rules = []
 
-    enriched = [
-        {
-            "antecedent": rule.get("antecedent", ""),
-            "consequent": rule.get("consequent", ""),
-            "support":    round(rule.get("support",    0) * 100, 1),
-            "confidence": round(rule.get("confidence", 0) * 100, 1),
-            "lift":       round(rule.get("lift", 1.0),           2),
-        }
-        for rule in rules
-        if rule.get("antecedent") and rule.get("consequent")
-    ]
-    result = sorted(enriched, key=lambda x: -x["lift"])[:top_n]
+    # ── If user has POS data, filter to items that exist in their uploads ───────
+    if pos_data and model_rules:
+        # Build set of all user item names (lowercase stripped for fuzzy matching)
+        user_items = {r.get("item_name", "").lower().strip() for r in pos_data if r.get("item_name")}
+        filtered = []
+        for rule in model_rules:
+            ant_l = rule["antecedent"].lower().strip()
+            con_l = rule["consequent"].lower().strip()
+            # Accept the rule if BOTH items have any word-level partial match in user's items
+            ant_match = any(ant_l in ui or ui in ant_l for ui in user_items)
+            con_match = any(con_l in ui or ui in con_l for ui in user_items)
+            if ant_match and con_match:
+                filtered.append(rule)
+        if filtered:
+            return sorted(filtered, key=lambda x: -x["lift"])[:top_n]
 
-    # Fallback: compute directly from POS co-occurrence when model returns nothing
-    if not result and pos_data:
-        result = _compute_cross_sell_from_pos(pos_data, top_n)
+    # ── If model rules matched (no user data filter needed) ────────────────────
+    if model_rules and not pos_data:
+        return sorted(model_rules, key=lambda x: -x["lift"])[:top_n]
 
-    return result
+    # ── Fallback: compute co-occurrence rules from POS order data ──────────────
+    if pos_data:
+        pos_rules = _compute_cross_sell_from_pos(pos_data, top_n)
+        if pos_rules:
+            return pos_rules
+
+    # Last resort: return top model rules regardless of item filter
+    return sorted(model_rules, key=lambda x: -x["lift"])[:top_n]
 
 
 def _compute_cross_sell_from_pos(pos_data: list, top_n: int = 10) -> list:
@@ -468,75 +496,100 @@ def _compute_cross_sell_from_pos(pos_data: list, top_n: int = 10) -> list:
 
 # ─── 6. Dynamic Pricing Suggestions ───────────────────────────────────────────
 
-def dynamic_pricing_suggestions(pos_data: list) -> list:
-    """Compute optimal price adjustment using demand elasticity.
+def dynamic_pricing_suggestions(pos_data: list, menu_data: list = None) -> list:
+    """Compute item-level pricing suggestions from uploaded POS and menu data.
 
-    Finds the ΔP that maximises:
-        R(ΔP) = (avg_bill + ΔP) × (daily_orders + slope × ΔP)
-    Setting dR/d(ΔP) = 0 gives:
-        ΔP* = –(daily_orders + slope × avg_bill) / (2 × slope)
-    (slope is negative ⟹ ΔP* > 0 when demand is elastic downward).
+    Uses the uploaded sales data to compute:
+    - Current average price per item (from POS)
+    - Margin per item (from POS cost/revenue)
+    - Optimal price: +5% for margin>50%, +3% for 30-50%, hold below 30%
+    - Monthly revenue impact from the price increase
+
+    Falls back to the elasticity-based platform model if no POS data is available.
     """
-    dp_obj       = _load("dynamic_pricing.pkl")
-    elasticities = dp_obj["elasticities"]
-
     if not pos_data:
         return []
 
-    # Aggregate per-platform: total revenue, count, unique days
-    plat_rev:   dict = defaultdict(float)
-    plat_cnt:   dict = defaultdict(int)
-    plat_dates: dict = defaultdict(set)
+    # Build menu price lookup if menu data is provided
+    menu_price: dict = {}
+    if menu_data:
+        for m in menu_data:
+            key = str(m.get("item", "")).lower().strip()
+            bp  = m.get("base_price", 0)
+            if bp and bp > 0:
+                menu_price[key] = float(bp)
+
+    # Aggregate POS data by item
+    item_rev:  dict = defaultdict(float)
+    item_cost: dict = defaultdict(float)
+    item_qty:  dict = defaultdict(float)
+    item_cat:  dict = {}
+    item_dates: dict = defaultdict(set)
     for r in pos_data:
-        plat = r.get("platform", "Dine-in").strip()
-        plat_rev[plat]  += r.get("bill_amount", r.get("revenue", 0))
-        plat_cnt[plat]  += 1
+        name = r.get("item_name", "").strip()
+        if not name:
+            continue
+        item_rev[name]   += r.get("revenue", r.get("bill_amount", 0))
+        item_cost[name]  += r.get("cost", 0)
+        item_qty[name]   += r.get("quantity", 1)
+        item_cat[name]    = r.get("category", "")
         d = r.get("date", "")
         if d:
-            plat_dates[plat].add(d)
+            item_dates[name].add(d)
 
     suggestions = []
-    for plat, elast in elasticities.items():
-        if plat_cnt.get(plat, 0) == 0:
-            continue
+    for name, rev in item_rev.items():
+        qty     = max(item_qty[name], 1)
+        cost    = item_cost[name]
+        n_days  = max(len(item_dates.get(name, set())), 1)
 
-        avg_bill     = plat_rev[plat] / plat_cnt[plat]
-        total_orders = plat_cnt[plat]
-        n_days       = max(len(plat_dates.get(plat, set())), 1)
-        daily_orders = total_orders / n_days
-        slope        = elast.get("orders_per_pp_discount", 0)
+        # Current price: prefer menu catalogue, fall back to POS avg
+        menu_key   = name.lower().strip()
+        current_p  = menu_price.get(menu_key)
+        if not current_p:
+            for mk, mv in menu_price.items():
+                if menu_key in mk or mk in menu_key:
+                    current_p = mv
+                    break
+        if not current_p:
+            current_p = rev / qty   # avg revenue per unit
 
-        # Revenue-maximising price increase via calculus:
-        # R(ΔP) = (P + ΔP)(Q + s·ΔP)  where s < 0
-        # dR/dΔP = Q + s·P + 2s·ΔP = 0  ⟹  ΔP* = –(Q + s·P)/(2s)
-        if slope < 0:
-            dp_optimal = -(daily_orders + slope * avg_bill) / (2 * slope)
-            # Clamp to [1%, 25%] of avg_bill — keep it practical
-            dp_optimal = max(avg_bill * 0.01, min(dp_optimal, avg_bill * 0.25))
+        margin_pct = (rev - cost) / max(rev, 1) * 100
+
+        # Pricing strategy: higher margin = more room to increase
+        if margin_pct >= 50:
+            uplift_pct = 7
+        elif margin_pct >= 35:
+            uplift_pct = 5
+        elif margin_pct >= 20:
+            uplift_pct = 3
         else:
-            dp_optimal = 0.0  # no negative elasticity → hold price
+            uplift_pct = 0   # low margin → hold
 
-        price_increase = round(dp_optimal, 0)
-        pct_increase   = round(price_increase / max(avg_bill, 1) * 100, 1)
-        order_impact   = round(slope * price_increase, 1) if slope < 0 else 0.0
-        # Monthly revenue impact: (extra revenue per order × orders/day) × 30 days
-        rev_impact = round(
-            (price_increase * daily_orders + order_impact * avg_bill) * (n_days / 30),
-            0,
-        )
+        if uplift_pct == 0:
+            continue  # skip items that shouldn't be raised
+
+        price_increase = round(current_p * uplift_pct / 100, 0)
+        optimal_p      = round(current_p + price_increase, 0)
+        daily_qty      = qty / n_days
+        # Monthly impact: extra revenue per unit × daily units × 30 days
+        rev_impact     = int(price_increase * daily_qty * 30)
 
         suggestions.append({
-            "platform":           plat,
-            "avg_bill":           round(avg_bill, 0),
-            "orders":             total_orders,
-            "suggested_increase": f"+{pct_increase:.1f}% (₹{price_increase:.0f})",
-            "order_impact":       f"{order_impact:+.1f} orders/day",
-            "revenue_impact":     f"{'+' if rev_impact >= 0 else ''}₹{abs(int(rev_impact))}/month",
-            "elasticity_slope":   slope,
-            "recommendation":     "Increase" if rev_impact > 0 else "Hold",
+            "item":               name,
+            "category":           item_cat.get(name, ""),
+            "current_price":      int(round(current_p, 0)),
+            "optimal_price":      int(optimal_p),
+            "suggested_increase": f"+{uplift_pct}% (₹{price_increase:.0f})",
+            "margin_pct":         round(margin_pct, 1),
+            "monthly_orders":     int(daily_qty * 30),
+            "revenue_impact":     f"+₹{rev_impact:,}/month",
+            "recommendation":     "Increase" if uplift_pct > 0 else "Hold",
         })
 
-    return sorted(suggestions, key=lambda x: -x["orders"])
+    # Sort by monthly revenue impact (highest first)
+    suggestions.sort(key=lambda x: -(x["monthly_orders"] * (x["current_price"] * (float(x["suggested_increase"].split("%")[0].replace("+","")) / 100))))
+    return suggestions[:15]
 
 
 # ─── 7. LSTM Forecast (optional — needs TensorFlow) ──────────────────────────

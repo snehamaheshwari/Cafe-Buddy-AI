@@ -42,7 +42,7 @@ export default function CafeOS() {
 
   return (
     <div>
-      <Header title="Autonomous Café OS" subtitle="AI takes semi-automatic decisions. All actions logged for review." />
+      <Header title="AI-Powered Execution" subtitle="Approved decisions are executed automatically. All actions logged." />
       <div className="p-6 space-y-6">
 
         {/* System Health */}
@@ -114,7 +114,7 @@ export default function CafeOS() {
               <Activity size={14} className="text-rose-500" />
               <span className="card-title">Autonomous Actions Feed</span>
             </div>
-            <span className="text-xs text-slate-400">Real-time log of AI-initiated actions</span>
+            <span className="text-xs text-slate-400">Approved decisions + AI model actions</span>
           </div>
           <div className="card-body space-y-3">
             {actions.map((action: any) => {
@@ -154,7 +154,7 @@ export default function CafeOS() {
 
         {/* How It Works */}
         <div className="card">
-          <div className="card-header"><span className="card-title">How Autonomous Café OS Works</span></div>
+          <div className="card-header"><span className="card-title">How AI-Powered Execution Works</span></div>
           <div className="card-body">
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-6 text-center text-sm">
               <div className="space-y-2">
@@ -169,7 +169,7 @@ export default function CafeOS() {
                   <Bot size={20} className="text-brand-500" />
                 </div>
                 <div className="font-semibold text-slate-800">Decide</div>
-                <p className="text-xs text-slate-500">Decision Engine generates recommendations with confidence scores. High-confidence actions execute automatically.</p>
+                <p className="text-xs text-slate-500">Decision Engine generates AI recommendations. When you approve them in 'What To Do Next', they execute here automatically.</p>
               </div>
               <div className="space-y-2">
                 <div className="w-12 h-12 rounded-full bg-emerald-100 flex items-center justify-center mx-auto">

@@ -423,24 +423,40 @@ export default function AIMLIntelligence() {
             <div className="card-header">
               <div>
                 <span className="card-title">Dynamic Pricing Suggestions</span>
-                <p className="text-xs text-slate-400 mt-0.5">Demand elasticity model by platform</p>
+                <p className="text-xs text-slate-400 mt-0.5">Item-level pricing from your uploaded menu & POS data</p>
               </div>
-              <ModelBadge label="Elasticity Model" color="amber" />
+              <ModelBadge label="Menu Analytics" color="amber" />
             </div>
             {dynamicRows.length > 0 ? (
               <div className="overflow-hidden">
                 <table className="table-base">
                   <thead>
-                    <tr><th>Platform</th><th>Avg Bill</th><th>Suggested</th><th>Order Impact</th><th>Rev Impact</th><th>Action</th></tr>
+                    <tr>
+                      <th>Item</th>
+                      <th>Current ₹</th>
+                      <th>Optimal ₹</th>
+                      <th>Increase</th>
+                      <th>Monthly Impact</th>
+                      <th>Action</th>
+                    </tr>
                   </thead>
                   <tbody>
-                    {dynamicRows.map((r: any) => (
-                      <tr key={r.platform}>
-                        <td className="font-medium">{r.platform}</td>
-                        <td className="font-mono text-xs">₹{r.avg_bill}</td>
-                        <td className="text-xs text-emerald-600 font-semibold">{r.suggested_increase}</td>
-                        <td className="text-xs text-slate-500">{r.order_impact}</td>
-                        <td className={`text-xs font-semibold ${r.revenue_impact?.startsWith('+') ? 'text-emerald-600' : 'text-red-500'}`}>
+                    {dynamicRows.map((r: any, idx: number) => (
+                      <tr key={r.item ?? r.platform ?? idx}>
+                        <td className="font-medium text-xs max-w-[120px] truncate">
+                          {r.item ?? r.platform}
+                          {r.category && <span className="text-slate-400 ml-1">· {r.category}</span>}
+                        </td>
+                        <td className="font-mono text-xs text-slate-600">
+                          ₹{r.current_price ?? r.avg_bill}
+                        </td>
+                        <td className="font-mono text-xs text-emerald-600 font-semibold">
+                          ₹{r.optimal_price ?? (r.avg_bill + 10)}
+                        </td>
+                        <td className="text-xs text-emerald-600 font-semibold">
+                          {r.suggested_increase}
+                        </td>
+                        <td className="text-xs font-semibold text-emerald-600">
                           {r.revenue_impact}
                         </td>
                         <td>
