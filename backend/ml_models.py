@@ -387,14 +387,23 @@ def cancellation_risk_analysis(pos_data: list) -> dict:
 def cross_sell_recommendations(pos_data: list, top_n: int = 10) -> list:
     """Return cross-sell association rules sorted by lift.
 
+    Thresholds applied (both Apriori model and fallback co-occurrence miner):
+      lift       >= 1.5   — rule is meaningfully stronger than random chance
+      confidence >= 0.05  — at least 5% of antecedent transactions include consequent
+
     Strategy:
     1. Load the pre-trained Apriori model (cross_sell_rules.pkl with 1698 rules).
-    2. If the user has uploaded POS data, filter rules to only show item pairs
-       where BOTH the antecedent AND consequent appear in the user's uploaded items
-       (case-insensitive partial match) — so rules are always relevant to their menu.
+       Only rules that pass lift >= 1.5 AND confidence >= 0.05 are kept.
+    2. If the user has uploaded POS data, further filter to rules where BOTH the
+       antecedent AND consequent appear in the user's uploaded items (case-insensitive
+       partial match) — so rules are always relevant to their actual menu.
     3. If no model rules match the user's items, fall back to mining co-occurrence
-       rules directly from the user's POS order data.
+       rules directly from the user's POS order data (same thresholds applied there).
     """
+    # ── Thresholds ──────────────────────────────────────────────────────────────
+    MIN_LIFT       = 1.5
+    MIN_CONFIDENCE = 0.05   # 5% — stored as fraction in raw pkl, as % in model_rules
+
     # ── Load pre-trained Apriori model ─────────────────────────────────────────
     model_rules: list = []
     try:
@@ -410,7 +419,9 @@ def cross_sell_recommendations(pos_data: list, top_n: int = 10) -> list:
                     "lift":       round(float(r.get("lift", 1.0)),           2),
                 }
                 for r in raw
-                if r.get("antecedent") and r.get("consequent")
+                if (r.get("antecedent") and r.get("consequent")
+                    and float(r.get("lift",       0)) >= MIN_LIFT
+                    and float(r.get("confidence", 0)) >= MIN_CONFIDENCE)
             ]
     except Exception:
         model_rules = []
@@ -473,7 +484,10 @@ def _compute_cross_sell_from_pos(pos_data: list, top_n: int = 10) -> list:
         for a, b in _comb(sorted(items), 2):
             pair_freq[(a, b)] += 1
 
-    min_freq = max(3, int(total * 0.005))   # at least 0.5% support
+    # Same thresholds as the Apriori model: lift >= 1.5, confidence >= 0.05
+    MIN_LIFT_FB   = 1.5
+    MIN_CONF_FB   = 0.05
+    min_freq      = max(3, int(total * 0.005))   # at least 0.5% support
     rules = []
     for (a, b), freq in pair_freq.items():
         if freq < min_freq:
@@ -482,7 +496,7 @@ def _compute_cross_sell_from_pos(pos_data: list, top_n: int = 10) -> list:
         for ant, con in [(a, b), (b, a)]:
             conf = freq / max(item_freq[ant], 1)
             lift = conf / max(item_freq[con] / total, 1e-9)
-            if conf >= 0.10 and lift >= 1.05:
+            if conf >= MIN_CONF_FB and lift >= MIN_LIFT_FB:
                 rules.append({
                     "antecedent": ant,
                     "consequent": con,
