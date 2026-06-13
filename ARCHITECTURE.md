@@ -1,539 +1,508 @@
-# Cafe Buddy AI — Application Architecture
-### Comprehensive Technical Overview for Presentation
+# Cafe Buddy AI — Detailed Architecture
+
+> Full system architecture: data sources, code internals, ML pipeline, deployment, and code versioning.
 
 ---
 
-## 1. High-Level System Overview
+## 1. High-Level System Map
 
 ```
-┌──────────────────────────────────────────────────────────────────────────┐
-│                        CAFE BUDDY AI v2.1                                │
-│               "The AI-Powered Café Operating System"                     │
-├──────────────────────────────────────────────────────────────────────────┤
+╔══════════════════════════════════════════════════════════════════════════════════╗
+║                        CAFE BUDDY AI — FULL SYSTEM ARCHITECTURE                 ║
+╠══════════════════════════════════════════════════════════════════════════════════╣
+║                                                                                  ║
+║  ┌──────────────────────────────────────────────────────────────────────────┐   ║
+║  │                         OWNER / USER (Browser)                            │   ║
+║  │                                                                            │   ║
+║  │   Upload CSV/Excel  ──►  Review charts  ──►  Approve decisions           │   ║
+║  │   Assign roles      ──►  Chat with AI   ──►  Export audit log            │   ║
+║  └──────────────────────────────┬─────────────────────────────────────────┘   ║
+║                                 │  HTTPS  (aicafebuddy.com)                   ║
+║  ┌──────────────────────────────▼──────────────────────────────────────────┐   ║
+║  │                    REACT FRONTEND  (TypeScript + Vite 5)                  │   ║
+║  │                                                                            │   ║
+║  │  AuthContext (session + /auth/me polling)                                 │   ║
+║  │  PermissionRoute (RBAC gate per page)                                     │   ║
+║  │  apiFetch.ts (injects X-Username + X-Role headers)                        │   ║
+║  │  api.ts (typed REST client for all endpoints)                             │   ║
+║  │                                                                            │   ║
+║  │  11 role-gated pages:                                                     │   ║
+║  │  Dashboard | DataCollection | DataEngineering | AIMLIntelligence          │   ║
+║  │  DecisionEngine | CafeOS | Chatbot | PeerComparison                       │   ║
+║  │  WhatsAppNotifications | RoleManagement | AuditLog                        │   ║
+║  │                                                                            │   ║
+║  │  React 18 · TypeScript 5 · Vite · React Router 6                         │   ║
+║  │  Recharts · Tailwind CSS · Lucide React                                   │   ║
+║  └──────────────────────────────┬──────────────────────────────────────────┘   ║
+║                                 │  JSON REST API  +  SSE streaming             ║
+║  ┌──────────────────────────────▼──────────────────────────────────────────┐   ║
+║  │                  FASTAPI BACKEND  (Python 3.11 + Uvicorn)                 │   ║
+║  │                                                                            │   ║
+║  │  main.py (50+ routes, audit middleware)                                   │   ║
+║  │  multi_upload.py (5 upload types, column aliasing)                        │   ║
+║  │  data_store.py (shared state + JSON persistence)                          │   ║
+║  │                                                                            │   ║
+║  │  ┌──────────────────────────────────────────────────────────────────┐    │   ║
+║  │  │                        ML / AI LAYER                              │    │   ║
+║  │  │                                                                    │    │   ║
+║  │  │  ml_models.py          sentiment_engine.py    chatbot.py          │    │   ║
+║  │  │  ├ XGBoost forecast    ├ Logistic Regression  ├ Claude API (SSE) │    │   ║
+║  │  │  ├ Apriori cross-sell  ├ TF-IDF vectoriser    ├ DuckDuckGo      │    │   ║
+║  │  │  ├ RF peak hours       ├ NLTK tokenisation    └ Festival cal.   │    │   ║
+║  │  │  ├ XGBoost cancel risk ├ Aspect analysis                         │    │   ║
+║  │  │  ├ Dynamic pricing     └ NPS + trends         peer_comparison.py │    │   ║
+║  │  │  └ Platform Ridge reg.                        ├ Competitor DB    │    │   ║
+║  │  │                                               ├ DDG live search  │    │   ║
+║  │  │  role_store.py  audit_store.py  cafe_os_models.py                │    │   ║
+║  │  └──────────────────────────────────────────────────────────────────┘    │   ║
+║  └────────────────────────────────────────────────────────────────────────────┘   ║
+║                                                                                  ║
+║  ┌──────────────────────────────────────────────────────────────────────────┐   ║
+║  │                         INFRASTRUCTURE                                    │   ║
+║  │                                                                            │   ║
+║  │  GitHub (main branch)  ──webhook──►  Railway auto-deploy                 │   ║
+║  │    └─► Docker 2-stage build  (Node 18 Alpine → Python 3.11 slim)        │   ║
+║  │    └─► Uvicorn on port $PORT  serves FastAPI + React static build       │   ║
+║  │    └─► Railway Volume at /app/backend/data  (persistent uploads)        │   ║
+║  │  Domain: aicafebuddy.com  ──►  Railway reverse proxy  ──►  Container   │   ║
+║  └──────────────────────────────────────────────────────────────────────────┘   ║
+╚══════════════════════════════════════════════════════════════════════════════════╝
+```
+
+---
+
+## 2. Data Pipeline (Upload → Insight)
+
+```
+OWNER UPLOADS FILE
+       │
+       ▼
+POST /api/upload/{type}     (type = pos | financial | customer | reviews | menu)
+       │
+       ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│                   multi_upload.py / main.py                              │
 │                                                                          │
-│  Browser (React SPA)  ◄──── Vite Build ────►  /frontend/dist            │
-│        │                                                                 │
-│        │  HTTPS + X-Username / X-Role headers                           │
-│        ▼                                                                 │
-│  FastAPI (Python 3.11)  ◄──── Uvicorn ────►  Port 8000                 │
-│        │                                                                 │
-│        ├── data/roles.json   (RBAC store)                               │
-│        ├── data/audit.jsonl  (Audit trail)                              │
-│        └── models/*.pkl      (XGBoost / LogReg pre-trained models)      │
+│  1. Read bytes → pandas.read_excel() or read_csv()                      │
 │                                                                          │
-│  Deployment: Railway.app (Linux container, 1 vCPU, 512 MB RAM)          │
-│  Domain:     aicafebuddy.com (Cloudflare CDN)                           │
-└──────────────────────────────────────────────────────────────────────────┘
+│  2. Column detection  (30+ aliases per field, 3-pass matching):         │
+│       Pass 1 — exact match:  "Revenue" → revenue                        │
+│       Pass 2 — fragment:     "Revenue / Total" → revenue               │
+│       Pass 3 — leading word: "Item Name / Product" → item_name         │
+│                                                                          │
+│  3. Row normalisation → [{                                               │
+│       date, item_name, category, quantity,                               │
+│       price, revenue, cost, platform, order_id, hour                    │
+│     }]                                                                   │
+│                                                                          │
+│  4. Persist to Railway Volume:                                           │
+│       data_store.save_dataset("pos", rows, info)                        │
+│       → /app/backend/data/pos.json                                       │
+│                                                                          │
+│  5. Audit log entry: user X uploaded N rows of type Y                   │
+└─────────────────────────────────────────────────────────────────────────┘
+       │
+       ▼
+data_store global state updated
+  _pos_data · _menu_data · _financial_data · _customer_data · _reviews_data
+       │
+       ├──► Dashboard KPIs      ← _calc_kpis(pos_data)
+       ├──► Revenue Forecast    ← ml_models.revenue_forecast()
+       ├──► Dynamic Pricing     ← ml_models.dynamic_pricing_suggestions()
+       ├──► Cross-sell          ← ml_models.cross_sell_recommendations()
+       ├──► Sentiment           ← sentiment_engine.analyse(reviews_data)
+       └──► Decision Engine     ← _generate_decisions(pos_data)
 ```
 
 ---
 
-## 2. Technology Stack
+## 3. ML Models Architecture
 
-| Layer          | Technology                                  | Version   |
-|----------------|---------------------------------------------|-----------|
-| Frontend       | React + TypeScript                          | 18.x      |
-| Routing        | React Router DOM                            | 6.x       |
-| Styling        | Tailwind CSS                                | 3.x       |
-| Icons          | Lucide React                                | 0.x       |
-| Build          | Vite                                        | 5.x       |
-| Backend        | FastAPI + Python                            | 0.111 / 3.11 |
-| ASGI Server    | Uvicorn                                     | 0.30      |
-| ML Models      | XGBoost, Scikit-learn, NLTK                 | latest    |
-| Data Format    | JSON (roles/users), JSONL (audit), XLSX (uploads) |      |
-| Testing        | pytest + httpx (ASGITransport)              |           |
-| Load Testing   | Locust                                      | 2.x       |
-| Deployment     | Railway.app                                 |           |
+```
+ALL MODELS ARE LOADED LAZILY  (cached in _cache dict after first load)
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  1. REVENUE FORECAST                                                     │
+│                                                                          │
+│  File:     xgboost_model.joblib                                         │
+│  Type:     XGBoost Regressor — 600 estimators, max_depth=6             │
+│  Training: 100,000 CafeBuddy transactions                               │
+│  Accuracy: MAPE 7.83%  |  MAE ₹5,153  |  RMSE ₹6,064                  │
+│                                                                          │
+│  Uploaded POS                                                            │
+│    → daily revenue aggregation                                           │
+│    → lag features: lag_7, lag_14, lag_28                                │
+│    → rolling: roll_mean_7, roll_std_7                                   │
+│    → XGBoost predict 30 days forward                                    │
+│    → scale to café's actual revenue range                               │
+│    → [{date, forecast, lower_bound, upper_bound}]                       │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  2. CROSS-SELL RECOMMENDATIONS  (Apriori association rules)             │
+│                                                                          │
+│  File:  cross_sell_rules.pkl                                            │
+│  Total rules: 1,698  |  After quality filter: 8                        │
+│  Thresholds: lift >= 1.5  AND  confidence >= 0.05 (5%)                 │
+│                                                                          │
+│  Top rules:                                                              │
+│    Masala Omelette → Lemonade           lift=2.08  conf=12.3%          │
+│    Belgian Waffle  → Iced Latte          lift=1.83  conf=10.9%          │
+│    Choco Lava Cake → Chocolate Brownie   lift=1.56  conf=6.5%           │
+│    Belgian Waffle  → Americano           lift=1.52  conf=8.9%           │
+│    Hot Chocolate   → Kashmiri Kahwa      lift=1.50  conf=6.9%           │
+│                                                                          │
+│  Inference:                                                              │
+│    Pre-trained rules                                                     │
+│      → filter: lift >= 1.5 AND conf >= 0.05                            │
+│      → filter: both items in uploaded POS item names (fuzzy match)     │
+│      → sort by lift desc → top 10                                       │
+│                                                                          │
+│  Fallback (when no rules match uploaded items):                          │
+│    POS rows grouped by order_id (same bill = bought together)           │
+│      → count co-occurrence of every directed item pair                  │
+│      → compute support, confidence, lift                                │
+│      → same quality gates: lift >= 1.5, conf >= 0.05                   │
+│      → sort by lift → top 10                                            │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  3. DYNAMIC PRICING  (data-driven, no hardcoding)                       │
+│                                                                          │
+│  Input: uploaded POS + uploaded Menu catalogue                          │
+│                                                                          │
+│  Step 1 — Build menu item set: {item.lower() for item in menu_data}    │
+│  Step 2 — Aggregate POS by item: revenue, cost, qty, n_days            │
+│  Step 3 — Menu filter: skip POS items absent from menu catalogue        │
+│             (removes deleted/erroneous items like "Diavola")            │
+│  Step 4 — Compute from real data:                                       │
+│             current_price = menu price (or POS avg revenue/qty)        │
+│             margin_pct    = (revenue - cost) / revenue × 100           │
+│             daily_qty     = total_qty / n_days                          │
+│  Step 5 — Tier assignment (from actual margin):                         │
+│             margin >= 55%  → Increase +8%  (very healthy)             │
+│             margin 40-55%  → Increase +5%  (solid)                     │
+│             margin 25-40%  → Hold           (near-optimal)             │
+│             margin <  25%  → Review         (cost audit needed)        │
+│               high volume  → "audit ingredient costs"                   │
+│               low  volume  → "consider repricing or removal"            │
+│  Step 6 — Sort: Increase (by impact) → Hold → Review → top 15          │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  4. SENTIMENT ANALYSIS                                                   │
+│                                                                          │
+│  Files: sentiment_model.pkl · tfidf_vectorizer.pkl · label_encoder.pkl │
+│  Type: Logistic Regression + TF-IDF                                     │
+│  Labels: Negative | Neutral | Positive                                  │
+│                                                                          │
+│  Review text                                                             │
+│    → NLTK tokenise (punkt) + stopword removal                           │
+│    → TF-IDF vectorise (tfidf_vectorizer.pkl)                           │
+│    → LR predict + confidence score (sentiment_model.pkl)               │
+│    → Label decode (label_encoder.pkl)                                   │
+│    → Aspect extraction (5 dimensions):                                  │
+│        Food & Menu | Service | Ambiance | Price/Value | Wait Time       │
+│    → NPS = %Positive - %Negative                                        │
+│    → Keyword frequency cloud                                            │
+│    → Sentiment trend (weekly aggregation over time)                     │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  5. PEAK HOURS                                                           │
+│  Uploaded POS → group by (hour × day_of_week) → sum orders             │
+│  Output: 7×24 order-density heatmap                                     │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  6. CANCELLATION RISK  (XGBoost classifier)                             │
+│  Input: platform, hour, day, category from uploaded POS                 │
+│  Output: risk score per platform + high-risk order flags                │
+└─────────────────────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│  7. PLATFORM FORECAST  (Ridge regressors per platform)                  │
+│  Input: platform-filtered daily revenue from uploaded POS               │
+│  Output: 14-day per-platform revenue forecast                           │
+└─────────────────────────────────────────────────────────────────────────┘
+```
 
 ---
 
-## 3. 5-Layer Intelligence Architecture
-
-The system is designed as 5 progressive intelligence layers:
+## 4. Decision Engine & AI-Powered Execution
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│  LAYER 5 — AUTO-PILOT (Autonomous Café OS)              │
-│  XGBoost demand forecasting, price optimisation,         │
-│  automatic decisions, real-time alerts                   │
-├─────────────────────────────────────────────────────────┤
-│  LAYER 4 — DECISION ENGINE                              │
-│  AI-driven recommendations: pricing, staffing,          │
-│  menu optimisation, marketing promotions                 │
-├─────────────────────────────────────────────────────────┤
-│  LAYER 3 — AI / ML INTELLIGENCE                         │
-│  Revenue forecasting, customer segmentation,            │
-│  cross-sell association rules, sentiment NLP            │
-├─────────────────────────────────────────────────────────┤
-│  LAYER 2 — DATA ENGINEERING                             │
-│  ETL pipelines, data quality scoring, trend analysis,   │
-│  platform breakdown, daily aggregations                 │
-├─────────────────────────────────────────────────────────┤
-│  LAYER 1 — DATA COLLECTION                              │
-│  Excel upload (POS, Financial, Customer, Reviews, Menu),│
-│  column auto-detection, validation, normalization        │
-└─────────────────────────────────────────────────────────┘
-```
-
----
-
-## 4. Frontend Architecture
-
-### 4.1 Component Tree
-
-```
-App.tsx
-├── AuthProvider (Context — user, login, logout, hasPermission)
-│   └── BrowserRouter
-│       ├── /login          → PublicRoute → Login.tsx
-│       └── PrivateLayout   → SidebarProvider
-│           ├── Sidebar.tsx (RBAC-filtered navigation)
-│           │   ├── NAV_ITEMS (9 items, filtered by permission)
-│           │   └── Admin section (role_management + audit_logs)
-│           ├── Header.tsx  (clock, user badge, sign-out)
-│           └── [Page routes — all PermissionRoute guarded]
-│               ├── /                  → Dashboard.tsx
-│               ├── /data-collection   → DataCollection.tsx
-│               ├── /data-engineering  → DataEngineering.tsx
-│               ├── /ai-intelligence   → AIMLIntelligence.tsx
-│               ├── /decision-engine   → DecisionEngine.tsx
-│               ├── /cafe-os           → CafeOS.tsx
-│               ├── /chatbot           → Chatbot.tsx
-│               ├── /peer-comparison   → PeerComparison.tsx
-│               ├── /notifications     → WhatsAppNotifications.tsx
-│               ├── /role-management   → RoleManagement.tsx
-│               └── /audit             → AuditLog.tsx
-└── ErrorBoundary (catches render crashes → "Clear session" button)
-```
-
-### 4.2 Key Frontend Patterns
-
-| Pattern              | Implementation                                               |
-|----------------------|--------------------------------------------------------------|
-| Global auth state    | `AuthContext` — `user`, `hasPermission()`, `isAdmin()`       |
-| Permission-gated routes | `PermissionRoute` component → redirects to `/` if denied |
-| API calls            | `apiFetch()` — auto-appends `X-Username` + `X-Role` headers  |
-| Crash recovery       | `ErrorBoundary` in `main.tsx` — clear session + reload       |
-| Sidebar visibility   | Filtered by `hasPermission()` at render time                 |
-
-### 4.3 Auth localStorage Format
-
-```json
-{
-  "username":    "admin",
-  "full_name":   "Admin User",
-  "role_id":     "admin",
-  "role":        "Admin",
-  "permissions": ["dashboard", "upload_data", "reports", "...", "audit_logs"],
-  "token":       "demo-token-admin"
-}
-```
-
----
-
-## 5. Backend Architecture
-
-### 5.1 Module Structure
-
-```
-backend/
-├── main.py              — FastAPI app, all 40+ endpoints, audit middleware
-├── role_store.py        — RBAC store (roles + users → data/roles.json)
-├── audit_store.py       — Audit log store (data/audit.jsonl, in-memory cache)
-├── data_store.py        — Shared mutable state for uploaded datasets
-├── chatbot.py           — Conversational AI router (/api/chat)
-├── multi_upload.py      — Multi-dataset upload router
-├── sentiment_engine.py  — NLP review analysis (Logistic Regression + TF-IDF)
-├── ml_models.py         — XGBoost revenue forecast, cross-sell, dynamic pricing
-├── peer_comparison.py   — Market radar competitor analysis
-├── cafe_os_models.py    — Layer 5 autonomous actions from XGBoost models
-├── data/
-│   ├── roles.json       — Persisted roles and users
-│   └── audit.jsonl      — Append-only audit trail (JSONL, up to 50K entries)
-├── models/
-│   ├── demand_forecast_model.pkl
-│   ├── item_popularity_model.pkl
-│   ├── price_optimization_table.pkl
-│   └── sentiment_model.pkl (+ vectorizer, label encoder)
-└── tests/
-    ├── test_role_store.py    — 89 unit tests
-    ├── test_role_api.py      — 58 integration tests
-    ├── test_audit_store.py   — 90 unit tests
-    ├── test_audit_api.py     — 50 integration tests
-    └── test_performance.py   — Performance + load tests
-```
-
-### 5.2 Request Lifecycle
-
-```
-Browser
+Uploaded POS data
+       │
+       ▼
+_generate_decisions(pos_data)  in main.py
+       │
+       ├─ _item_stats(data)         group by item: qty, revenue, cost, margin
+       ├─ _platform_breakdown(data) group by platform: revenue, orders, avg_ticket
+       ├─ Identify top/bottom items from REAL uploaded data
+       │
+       ├─ Generate decisions (all values from uploaded data — zero hardcoding):
+       │    Pricing    ← top items with actual margin info
+       │    Marketing  ← best platform by real revenue
+       │    Staffing   ← peak hour from uploaded POS
+       │    Inventory  ← high-volume items from real counts
+       │    Operations ← low-margin items needing review
+       │
+       ▼
+Decision list  (GET /api/layer4/decisions)
+       │
+       ▼
+Owner reviews in "What To Do Next" page
+       │
+  ┌────┴────┐
+Approve   Reject
   │
-  │  apiFetch() adds X-Username header
   ▼
-FastAPI (main.py)
+POST /api/layer4/decisions/{id}/approve
+  → _decision_overrides[id] = "approved"
+  → audit_store.log_action("decision_approved")
   │
-  ├── Audit Middleware (every authenticated request)
-  │     Reads X-Username, logs path + method + status + duration
-  │
-  ├── Endpoint Handler (e.g. POST /api/auth/login)
-  │     1. Business logic
-  │     2. Explicit audit log (action + description)
-  │     3. Return JSON response
-  │
-  └── role_store / audit_store
-        Data persisted to data/roles.json and data/audit.jsonl
+  ▼
+GET /api/layer5/autonomous-actions
+  → approved decisions + XGBoost model action alerts
+  → shown in "AI-Powered Execution" feed
 ```
 
 ---
 
-## 6. RBAC — Role-Based Access Control
-
-### 6.1 Built-in Roles
-
-| Role      | Permissions (11 total)                                                |
-|-----------|-----------------------------------------------------------------------|
-| **Admin**     | All 11: dashboard, upload_data, reports, analytics, decision_engine, auto_pilot, chatbot, market_radar, whatsapp_alerts, role_management, **audit_logs** |
-| **Sub-Admin** | dashboard, upload_data, reports, analytics, decision_engine, chatbot |
-| **Viewer**    | dashboard, reports, market_radar                                      |
-| **Custom**    | Any combination assigned by Admin                                     |
-
-### 6.2 Permission Keys
+## 5. Chatbot Architecture
 
 ```
-dashboard        → Home / Dashboard
-upload_data      → Upload My Data
-reports          → Reports & Insights
-analytics        → Smart Analytics
-decision_engine  → What To Do Next
-auto_pilot       → Auto-Pilot Mode
-chatbot          → Ask Cafe Buddy
-market_radar     → Market Radar
-whatsapp_alerts  → WhatsApp Alerts
-role_management  → Role Management
-audit_logs       → Audit Logs          ← NEW
-```
-
-### 6.3 Permission Guard Flow
-
-```
-User navigates to /audit
-     ↓
-PermissionRoute checks hasPermission("audit_logs")
-     ↓ no
-Navigate to /          ← user sees dashboard, no error flash
-     ↓ yes
-AuditLog.tsx renders   ← full audit view
+POST /api/chatbot/chat  {message: "..."}
+       │
+       ▼
+┌─────────────────────────────────────────────────┐
+│              CONTEXT BUILDER                     │
+│                                                  │
+│  item_stats(pos_data)          top items        │
+│  platform_breakdown(pos_data)  platform split   │
+│  daily_revenue(pos_data)       revenue trend    │
+│  sentiment_engine.get_chat_context()  NPS data  │
+│  festival_calendar             upcoming events  │
+└─────────────────────────────────────────────────┘
+       │
+  ANTHROPIC_API_KEY set?
+  YES │                    NO
+      ▼                     ▼
+Claude API (SSE)    Smart Analytics Engine
+  claude-3-haiku    (no external calls)
+  system prompt =   pattern match message
+  café context      → pick relevant block
+  injected          → structured response
+      │
+  DuckDuckGo search needed?
+  (competitor / festival query detected)
+      │ YES
+      ▼
+  DDGS().text(query, max_results=5)
+  inject results into Claude context
+      │
+      ▼
+StreamingResponse (Server-Sent Events)
+  token-by-token streaming to browser
+  frontend renders in real-time
 ```
 
 ---
 
-## 7. Audit Management System
+## 6. RBAC & Audit Architecture
 
-### 7.1 Audit Entry Structure
-
-```json
+```
+data/roles.json  (Railway Volume)
 {
-  "id":          "a3f8c21d",
-  "timestamp":   "2026-06-09 14:32:05",
-  "username":    "admin",
-  "role":        "Admin",
-  "module":      "upload_data",
-  "module_label":"Upload My Data",
-  "action":      "FILE_UPLOAD",
-  "description": "Uploaded 'sales_may.xlsx' — 1,240 records, 30 days, 18 items",
-  "status":      "success",
-  "ip_address":  "49.36.x.x",
-  "duration_ms": 312
+  "roles": {
+    "admin":     { "permissions": [all 11 features], "system": true },
+    "sub_admin": { "permissions": [9 features],      "system": true },
+    "viewer":    { "permissions": ["dashboard"],     "system": true },
+    "<custom>":  { "permissions": [...admin-defined] }
+  },
+  "users": {
+    "admin": { "role": "admin", "system": true },
+    "owner": { "role": "admin", "system": true },
+    "<any>": { "role": "<role>", "created_at": "..." }
+  }
 }
-```
 
-### 7.2 Storage Strategy
+Permission check flow:
+  Browser request
+    → apiFetch.ts adds X-Username + X-Role headers
+    → FastAPI route: role_store.has_permission(username, feature)
+    → 403 if absent
+    → Frontend PermissionRoute also checks locally (no round-trip for nav)
 
-| Property         | Detail                                              |
-|------------------|-----------------------------------------------------|
-| Format           | JSONL (JSON Lines) — one object per line            |
-| Location         | `data/audit.jsonl`                                  |
-| Max on disk      | 50,000 entries (oldest trimmed automatically)       |
-| In-memory cache  | Last 5,000 entries in `collections.deque`           |
-| Thread safety    | `threading.Lock` on all file writes                 |
-| Write speed      | < 2 ms per entry (append-only)                      |
-| Read speed       | < 5 ms for 100 entries (from memory)                |
+AUDIT SYSTEM  (audit_store.py)
 
-### 7.3 Audit Coverage
+  Automatic (HTTP middleware in main.py):
+    All authenticated non-polling requests
+    → X-Username, X-Role from headers
+    → method, path, status_code, duration_ms, ip_address logged
 
-| Event                           | Action Key           | Triggered From         |
-|---------------------------------|----------------------|------------------------|
-| Successful login                | LOGIN                | POST /api/auth/login   |
-| Failed login attempt            | LOGIN (error status) | POST /api/auth/login   |
-| Logout                          | LOGOUT               | POST /api/auth/logout  |
-| Excel file uploaded             | FILE_UPLOAD          | POST /api/upload/excel |
-| Data cleared                    | FILE_CLEAR           | DELETE /api/upload/clear |
-| Decision approved               | DECISION_APPROVE     | POST /api/layer4/decisions/{id}/approve |
-| Decision rejected               | DECISION_REJECT      | POST /api/layer4/decisions/{id}/reject  |
-| Role created                    | ROLE_CREATE          | POST /api/roles        |
-| Role updated                    | ROLE_UPDATE          | PUT /api/roles/{id}    |
-| Role deleted                    | ROLE_DELETE          | DELETE /api/roles/{id} |
-| User created                    | USER_CREATE          | POST /api/users        |
-| User updated                    | USER_UPDATE          | PUT /api/users/{id}    |
-| User deleted                    | USER_DELETE          | DELETE /api/users/{id} |
-| Peer analysis run               | PEER_ANALYSIS        | POST /api/peers/analyze |
-| Audit log viewed                | AUDIT_VIEW           | GET /api/audit/logs    |
-| Audit exported                  | EXPORT               | GET /api/audit/export  |
+  Explicit (critical actions):
+    data_uploaded · decision_approved · user_created · role_changed
 
-### 7.4 Audit Log API Endpoints
-
-```
-GET  /api/audit/logs    — paginated + filterable log viewer
-GET  /api/audit/stats   — today's stats, module breakdown, hourly chart
-GET  /api/audit/export  — CSV download (streamed)
-GET  /api/audit/modules — metadata (module list, action types)
+  Storage: data/audit_log.json  (Railway Volume)
+  Export:  GET /api/audit?format=csv
 ```
 
 ---
 
-## 8. API Endpoint Catalog
-
-### Authentication
-
-| Method | Path              | Description               |
-|--------|-------------------|---------------------------|
-| POST   | /api/auth/login   | Validate credentials, return permissions |
-| POST   | /api/auth/logout  | Log out (audit + session) |
-
-### Role Management
-
-| Method | Path                    | Description              |
-|--------|-------------------------|--------------------------|
-| GET    | /api/roles              | List all roles + labels  |
-| POST   | /api/roles              | Create custom role       |
-| PUT    | /api/roles/{role_id}    | Update role              |
-| DELETE | /api/roles/{role_id}    | Delete custom role       |
-| GET    | /api/users              | List all users           |
-| POST   | /api/users              | Create user              |
-| PUT    | /api/users/{username}   | Update user              |
-| DELETE | /api/users/{username}   | Delete non-system user   |
-
-### Audit
-
-| Method | Path                  | Description               |
-|--------|-----------------------|---------------------------|
-| GET    | /api/audit/logs       | Paginated + filtered logs |
-| GET    | /api/audit/stats      | Aggregated stats          |
-| GET    | /api/audit/export     | CSV download              |
-| GET    | /api/audit/modules    | Module/action metadata    |
-
-### Data Upload
-
-| Method | Path                  | Description               |
-|--------|-----------------------|---------------------------|
-| POST   | /api/upload/excel     | Upload POS / financial XLSX |
-| GET    | /api/upload/status    | Check upload status       |
-| DELETE | /api/upload/clear     | Revert to demo data       |
-
-### Intelligence Layers
-
-| Method | Path                              | Layer | Description         |
-|--------|-----------------------------------|-------|---------------------|
-| GET    | /api/dashboard/overview           | —     | KPI summary         |
-| GET    | /api/layer1/summary               | L1    | Data collection     |
-| GET    | /api/layer1/platforms             | L1    | Platform breakdown  |
-| POST   | /api/layer1/sales                 | L1    | Manual entry        |
-| GET    | /api/layer2/pipeline-status       | L2    | ETL pipeline        |
-| GET    | /api/layer2/processed-data        | L2    | Aggregated sales    |
-| GET    | /api/layer2/insights              | L2    | Per-dataset insights|
-| GET    | /api/layer3/forecast              | L3    | Revenue forecast    |
-| GET    | /api/layer3/recommendations       | L3    | Product recs        |
-| GET    | /api/layer3/segmentation          | L3    | Customer segments   |
-| GET    | /api/layer3/market-insights       | L3    | Market benchmarks   |
-| GET    | /api/layer4/decisions             | L4    | AI decisions        |
-| POST   | /api/layer4/decisions/{id}/approve| L4    | Approve decision    |
-| POST   | /api/layer4/decisions/{id}/reject | L4    | Reject decision     |
-| GET    | /api/layer5/autonomous-actions    | L5    | Autopilot actions   |
-| GET    | /api/layer5/kpis                  | L5    | KPI metrics         |
-| GET    | /api/layer5/price-recommendations | L5    | Price optimisation  |
-| GET    | /api/layer5/model-status          | L5    | Model health        |
-
-### ML Model Direct Endpoints
-
-| Method | Path                      | Description                |
-|--------|---------------------------|----------------------------|
-| GET    | /api/ml/forecast          | XGBoost 7-day forecast     |
-| GET    | /api/ml/platform-forecast | Per-platform forecast      |
-| GET    | /api/ml/peak-hours        | Peak hour analysis         |
-| GET    | /api/ml/cancellation-risk | Cancellation risk scoring  |
-| GET    | /api/ml/cross-sell        | Association rules          |
-| GET    | /api/ml/dynamic-pricing   | Price suggestions          |
-| GET    | /api/ml/model-comparison  | Model performance table    |
-
-### Sentiment & Chatbot
-
-| Method | Path                   | Description              |
-|--------|------------------------|--------------------------|
-| POST   | /api/chat              | AI chatbot query         |
-| GET    | /api/sentiment/overview| Sentiment stats          |
-
-### Peer Comparison
-
-| Method | Path                      | Description             |
-|--------|---------------------------|-------------------------|
-| GET    | /api/peers/cities         | Available cities        |
-| GET    | /api/peers/areas          | Areas for city          |
-| GET    | /api/peers/competitors    | Competitor list         |
-| GET    | /api/peers/live-search    | Live competitor search  |
-| POST   | /api/peers/analyze        | AI peer analysis        |
-
----
-
-## 9. ML Models
-
-### 9.1 Model Inventory
-
-| Model                        | Algorithm              | Purpose                           |
-|------------------------------|------------------------|-----------------------------------|
-| demand_forecast_model.pkl    | XGBoost Regressor      | Daily revenue forecast (7 days)   |
-| item_popularity_model.pkl    | XGBoost Classifier     | Item demand by daypart            |
-| price_optimization_table.pkl | Pre-computed table     | Optimal price per item            |
-| sentiment_model.pkl          | Logistic Regression    | Positive / negative review scoring|
-| sentiment_vectorizer.pkl     | TF-IDF Vectorizer      | Feature extraction for sentiment  |
-| sentiment_label_encoder.pkl  | Label Encoder          | Class mapping for sentiment       |
-
-### 9.2 Fallback Strategy
+## 7. Deployment & CI/CD Pipeline
 
 ```
-POS Data ≥ 14 days?
-    YES → XGBoost forecast (P95 accuracy ~88%)
-    NO  → Weekday-Average heuristic (accuracy ~65%)
+DEVELOPER LOCAL MACHINE
+  Edit code
+    └─► git add + git commit
+           └─► git push origin master        (working branch)
+           └─► git push origin master:main   (triggers Railway deploy)
 
-Sentiment model present?
-    YES → Logistic Regression (avg confidence ~87%)
-    NO  → Keyword matching fallback
+GITHUB  (snehamaheshwari/Cafe-Buddy-AI)
+  Branch: main   ← Railway auto-deploy target (webhook ON)
+  Branch: master ← development working branch
 
-XGBoost models present?
-    YES → Autonomous actions from models
-    NO  → Placeholder alert (graceful degradation)
+RAILWAY  (project: authentic-imagination, service: Cafe-Buddy-AI)
+
+  DOCKER 2-STAGE BUILD  (railway.toml → builder = "dockerfile")
+
+  STAGE 1 — node:18-alpine
+    COPY frontend/package*.json
+    RUN  npm ci --silent
+    COPY frontend/
+    RUN  npm run build   → /app/frontend/dist/
+
+  STAGE 2 — python:3.11-slim
+    RUN  apt-get install gcc   (pandas/scikit-learn native deps)
+    COPY backend/requirements.txt
+    RUN  pip install -r requirements.txt
+    RUN  python -c "nltk.download(...)"   (punkt, stopwords)
+    COPY backend/
+    COPY --from=stage1 /app/frontend/dist  /app/frontend/dist
+    RUN  mkdir -p /app/backend/data
+    CMD  uvicorn main:app --host 0.0.0.0 --port $PORT
+
+  After successful build:
+    New container replaces old one
+    Railway Volume /app/backend/data re-attached automatically
+    Restart policy: on_failure, max 5 retries
+
+LIVE SERVICE
+  uvicorn on port 8080
+  /api/*       → FastAPI routes
+  /api/chatbot/chat → Server-Sent Events
+  /*           → React SPA (index.html fallback)
+  /assets/*    → Vite static artifacts
+
+  Domain: aicafebuddy.com → Railway proxy → container
 ```
 
 ---
 
-## 10. Data Flow
-
-### 10.1 Upload → Analysis Flow
+## 8. Frontend Request Lifecycle
 
 ```
-User uploads sales.xlsx
-        ↓
-POST /api/upload/excel
-        ↓
-_parse_excel_bytes()
-    ↓ column auto-detection (30+ aliases per field)
-    ↓ validation + skipping bad rows
-        ↓
-data_store._pos_data populated
-        ↓
-audit_store.log_action(FILE_UPLOAD)
-        ↓
-All analytics endpoints now return live data:
-  /api/layer2/processed-data    — real daily revenue
-  /api/layer3/forecast          — XGBoost / weekday heuristic
-  /api/layer4/decisions         — data-driven recommendations
-  /api/layer5/autonomous-actions — automated decisions
-```
-
-### 10.2 Login → Permission Flow
-
-```
-POST /api/auth/login {username, password}
-        ↓
-role_store.authenticate()
-    ↓ lookup user → get role → get permissions[]
-        ↓
-Return: {username, full_name, role_id, role, permissions[], token}
-        ↓
-Frontend: localStorage.setItem("cafe_buddy_auth", {...})
-        ↓
-AuthContext.loadUser() → permissions[]
-        ↓
-Sidebar renders filtered nav items
-PermissionRoute guards each page
+User navigates to page
+       │
+       ▼
+React Router matches route
+       │
+       ▼
+PermissionRoute checks AuthContext.hasPermission(feature)
+  NO  → redirect to "/"
+  YES → page component mounts
+           │
+           ▼
+       useEffect → api.ts call
+           │
+           ▼
+       apiFetch.ts:
+         fetch(`/api/...`, {
+           headers: {
+             "X-Username": session.username,   ← for audit logging
+             "X-Role":     session.role,        ← for permission checks
+           }
+         })
+           │
+           ▼
+       FastAPI: audit_middleware logs → route handler → JSON response
+           │
+           ▼
+       React state update → Recharts re-renders charts/tables
 ```
 
 ---
 
-## 11. Test Coverage Summary
-
-| Test File                  | Tests | Coverage Area                        |
-|----------------------------|-------|--------------------------------------|
-| test_role_store.py         | 89    | RBAC store unit tests                |
-| test_role_api.py           | 58    | Role/User API integration + regression |
-| test_audit_store.py        | 90    | Audit store unit tests               |
-| test_audit_api.py          | 50    | Audit API integration + regression   |
-| test_performance.py        | 15    | Load + performance benchmarks        |
-| test_ml_models.py (existing)| 20+  | ML model tests                       |
-| **Total**                  | **322+** | Full coverage across RBAC + Audit  |
-
-### Performance Targets (met)
-
-| Metric                    | Target    | Actual (typical) |
-|---------------------------|-----------|-----------------|
-| audit_store write speed   | < 2 ms    | ~0.3 ms         |
-| 100 concurrent requests   | P95 < 500 ms | ~80 ms P95   |
-| 500 concurrent requests   | error < 1% | 0%             |
-| 1000-user burst           | < 60 s    | ~8 s            |
-| 1000 audit writes         | < 5 s     | ~0.5 s          |
-
----
-
-## 12. Security Considerations
-
-| Area                    | Implementation                                     |
-|-------------------------|----------------------------------------------------|
-| Authentication          | Username / password stored in roles.json (demo mode) |
-| Authorization           | Permission-based RBAC, server-side check on every write |
-| Audit trail             | Immutable JSONL append, all admin actions logged   |
-| System roles            | `is_system: True` prevents deletion of admin/sub_admin/viewer |
-| System users            | admin + owner cannot be deleted via API            |
-| Admin permissions       | role_management + audit_logs always retained for admin role |
-| Frontend crash recovery | ErrorBoundary clears stale localStorage            |
-| Stale auth detection    | loadUser() rejects missing permissions array       |
-| CORS                    | Allow-All for demo; restrict to domain in production |
-
----
-
-## 13. Deployment Architecture
+## 9. External Integrations
 
 ```
-GitHub (snehamaheshwari/Cafe-Buddy-AI)
-        │
-        │  git push
-        ▼
-Railway.app (auto-deploy on push)
-        │
-        ├── Build: pip install -r requirements.txt
-        │          cd frontend && npm install && npm run build
-        │
-        ├── Start: uvicorn main:app --host 0.0.0.0 --port $PORT
-        │
-        ├── Persistent Volume: /app/backend/data/
-        │     roles.json     (RBAC config)
-        │     audit.jsonl    (audit trail)
-        │
-        └── Cloudflare → aicafebuddy.com (HTTPS, CDN)
+┌──────────────────────────────────────────────────────┐
+│  Anthropic Claude API                                  │
+│  Used by: chatbot.py + peer_comparison.py             │
+│  Model:   claude-3-haiku  (streaming)                 │
+│  Auth:    ANTHROPIC_API_KEY env var (Railway Vars)    │
+│  Fallback: smart analytics mode if key absent         │
+└──────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────┐
+│  DuckDuckGo Search (DDGS)                             │
+│  Used by: chatbot.py + peer_comparison.py             │
+│  Trigger: competitor / festival / market queries      │
+│  No API key required                                   │
+│  Fallback: pre-loaded competitor database             │
+└──────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────┐
+│  Green API (WhatsApp Business)                        │
+│  Used by: WhatsAppNotifications page                  │
+│  Auth:    idInstance + apiTokenInstance (user-input)  │
+│  No server-side key needed                            │
+└──────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────┐
+│  GitHub (snehamaheshwari/Cafe-Buddy-AI)               │
+│  Branches: main (deploy target) · master (dev)        │
+└──────────────────────────────────────────────────────┘
+
+┌──────────────────────────────────────────────────────┐
+│  Railway                                               │
+│  Project: authentic-imagination                       │
+│  Volume:  cafe-buddy-ai-volume → /app/backend/data    │
+└──────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 14. File Count & Code Size (approx.)
+## 10. Data Persistence Model
 
-| Area          | Files | Approx Lines |
-|---------------|-------|--------------|
-| Backend core  | 10    | ~5,000       |
-| Backend tests | 5     | ~600         |
-| Frontend pages| 11    | ~4,500       |
-| Frontend utils| 3     | ~250         |
-| Locustfile    | 1     | ~150         |
-| **Total**     | **30** | **~10,500** |
+```
+Railway Volume mounted at: /app/backend/data/
+
+File               Contents
+─────────────────────────────────────────────────────────────────────────
+pos.json           {data: [{order_id, item_name, bill_amount, cost,
+                     date, hour, platform, discount, ...}], info: {...}}
+financial.json     {data: [{date, revenue, expense, profit}], info: {}}
+customer.json      {data: [{customer_id, name, visits, spend}], info: {}}
+reviews.json       {data: [{review_text, rating, date}], info: {}}
+menu.json          {data: [{item, base_price, category, season}], info:{}}
+roles.json         {roles: {...}, users: {...}}
+audit_log.json     [{timestamp, username, module, action, status, ...}]
+
+All files survive container restart and new deployments.
+Volume is only lost if manually deleted (never happens automatically).
+
+In-memory state (reloaded from Volume on startup):
+  data_store._pos_data        loaded from pos.json
+  data_store._menu_data       loaded from menu.json
+  data_store._financial_data  loaded from financial.json
+  data_store._customer_data   loaded from customer.json
+  data_store._reviews_data    loaded from reviews.json
+  main._decision_overrides    in-memory only (resets on deploy)
+```
 
 ---
 
-*Cafe Buddy v2.1 — Built with FastAPI + React + XGBoost + RBAC + Audit Management*
-*Architecture document generated: 2026-06-09*
+*Last updated: June 2026 | aicafebuddy.com*
