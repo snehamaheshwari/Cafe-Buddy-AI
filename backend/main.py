@@ -937,7 +937,7 @@ async def upload_excel(file: UploadFile = File(...), request: Request = None):
         raise HTTPException(status_code=400, detail="Only .xlsx or .xls files are supported.")
 
     raw = await file.read()
-    username = request.headers.get("X-Username", "unknown") if request else "unknown"
+    username = request.headers.get("X-Username", "anonymous") if request else "anonymous"
     try:
         records, info = _parse_excel_bytes(raw)
     except ValueError as e:
@@ -974,7 +974,7 @@ def upload_status():
 @app.delete("/api/upload/clear")
 def clear_upload(request: Request = None):
     global _uploaded_data, _upload_info, _decision_overrides
-    username = request.headers.get("X-Username", "unknown") if request else "unknown"
+    username = request.headers.get("X-Username", "anonymous") if request else "anonymous"
     _audit.log_action(username=username, module="upload_data", action="FILE_CLEAR",
         description="Cleared uploaded data — reverted to demo mode",
         ip_address=(request.client.host if request and request.client else ""))
@@ -1668,7 +1668,7 @@ def sentiment_overview():
 @app.post("/api/layer4/decisions/{decision_id}/approve")
 def approve_decision(decision_id: int, request: Request = None):
     _decision_overrides[decision_id] = "approved"
-    username = request.headers.get("X-Username", "unknown") if request else "unknown"
+    username = request.headers.get("X-Username", "anonymous") if request else "anonymous"
     _audit.log_action(username=username, module="decision_engine", action="DECISION_APPROVE",
         description=f"Approved decision #{decision_id}",
         ip_address=(request.client.host if request and request.client else ""))
@@ -1678,7 +1678,7 @@ def approve_decision(decision_id: int, request: Request = None):
 @app.post("/api/layer4/decisions/{decision_id}/reject")
 def reject_decision(decision_id: int, request: Request = None):
     _decision_overrides[decision_id] = "rejected"
-    username = request.headers.get("X-Username", "unknown") if request else "unknown"
+    username = request.headers.get("X-Username", "anonymous") if request else "anonymous"
     _audit.log_action(username=username, module="decision_engine", action="DECISION_REJECT",
         description=f"Rejected decision #{decision_id}",
         ip_address=(request.client.host if request and request.client else ""))
@@ -1755,16 +1755,33 @@ def autonomous_actions():
         })
 
     approved_count = sum(1 for d in all_decisions if _decision_overrides.get(d["id"]) == "approved")
+
+    # Count model files that actually exist on disk
+    _MODELS_DIR = os.path.join(os.path.dirname(__file__), "models")
+    _ML_FILES = [
+        "xgboost_model.joblib",        # Revenue Forecast (XGBoost)
+        "sentiment_model.pkl",          # Sentiment Analysis (LR + TF-IDF)
+        "cross_sell_rules.pkl",         # Cross-sell (Apriori)
+        "demand_forecast_model.pkl",    # Peak Hours / Demand Forecast
+        "item_popularity_model.pkl",    # Item Popularity
+        "price_optimisation_table.csv", # Dynamic Pricing
+    ]
+    models_active = sum(1 for f in _ML_FILES if os.path.exists(os.path.join(_MODELS_DIR, f)))
+    if models_active == 0:
+        models_active = system_health.get("models_active", 0)
+
+    # Alerts fired = pending decisions that haven't been acted on yet
+    pending_count = len([
+        d for d in all_decisions
+        if _decision_overrides.get(d["id"]) not in ("approved", "rejected")
+    ])
+
     return {
         "actions": actions,
         "system_health": {
-            "models_active":             system_health.get("models_active", 4 if pos_data else 0),
+            "models_active":             models_active,
             "decisions_automated_today": approved_count,
-            "revenue_impact_today":      sum(
-                int(''.join(c for c in d.get("impact", "0") if c.isdigit() or c == '.').split('.')[0] or '0')
-                for d in actions if d.get("type") == "auto_executed"
-            ),
-            "alerts_fired": system_health.get("alerts_fired", 0),
+            "alerts_fired":              pending_count,
             "uptime": "99.9%",
         },
     }
@@ -1863,7 +1880,7 @@ def peer_analyze(req: PeerAnalyzeRequest, request: Request = None):
             "total_revenue": round(total_rev),
             "top_item": items[0]["name"] if items else "N/A",
         }
-    username = request.headers.get("X-Username", "unknown") if request else "unknown"
+    username = request.headers.get("X-Username", "anonymous") if request else "anonymous"
     _audit.log_action(username=username, module="market_radar", action="PEER_ANALYSIS",
         description=f"Ran peer analysis for {req.city}" + (f" / {req.area}" if req.area else "")
                     + f" — {len(competitors)} competitors",
@@ -1890,7 +1907,7 @@ def get_audit_logs(
     search:    Optional[str] = None,
     from_disk: bool = False,
 ):
-    actor = request.headers.get("X-Username", "unknown")
+    actor = request.headers.get("X-Username", "anonymous")
     entries, total = _audit.get_logs(
         limit=limit, offset=offset,
         username=username, module=module, action=action, status=status,
@@ -1923,7 +1940,7 @@ def export_audit_csv(
         username=username, module=module, action=action, status=status,
         date_from=date_from, date_to=date_to, from_disk=True,
     )
-    actor = request.headers.get("X-Username", "unknown")
+    actor = request.headers.get("X-Username", "anonymous")
     _audit.log_action(username=actor, module="audit_logs", action="EXPORT",
         description=f"Exported {len(entries)} audit log entries as CSV",
         ip_address=(request.client.host if request.client else ""))
