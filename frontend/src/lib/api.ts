@@ -1,7 +1,20 @@
 const BASE = '/api'
 
+/** Read stored auth so every request carries X-Username / X-Role. */
+function authHeaders(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem('cafe_buddy_auth')
+    if (!raw) return {}
+    const p = JSON.parse(raw)
+    if (!p?.username) return {}
+    return { 'X-Username': p.username, 'X-Role': p.role ?? '' }
+  } catch {
+    return {}
+  }
+}
+
 async function get<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`)
+  const res = await fetch(`${BASE}${path}`, { headers: authHeaders() })
   if (!res.ok) throw new Error(`API ${res.status}: ${path}`)
   return res.json()
 }
@@ -9,7 +22,7 @@ async function get<T>(path: string): Promise<T> {
 async function post<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: body ? JSON.stringify(body) : undefined,
   })
   if (!res.ok) {
@@ -20,7 +33,7 @@ async function post<T>(path: string, body?: unknown): Promise<T> {
 }
 
 async function del<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, { method: 'DELETE' })
+  const res = await fetch(`${BASE}${path}`, { method: 'DELETE', headers: authHeaders() })
   if (!res.ok) throw new Error(`API ${res.status}: ${path}`)
   return res.json()
 }
@@ -34,7 +47,7 @@ export const api = {
     excel:  (file: File) => {
       const fd = new FormData()
       fd.append('file', file)
-      return fetch(`${BASE}/upload/excel`, { method: 'POST', body: fd }).then(async (r) => {
+      return fetch(`${BASE}/upload/excel`, { method: 'POST', headers: authHeaders(), body: fd }).then(async (r) => {
         if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || 'Upload failed') }
         return r.json()
       })
@@ -44,21 +57,21 @@ export const api = {
     statusAll: () => get('/upload/status/all'),
     financial: (file: File) => {
       const fd = new FormData(); fd.append('file', file)
-      return fetch(`${BASE}/upload/financial`, { method: 'POST', body: fd }).then(async (r) => {
+      return fetch(`${BASE}/upload/financial`, { method: 'POST', headers: authHeaders(), body: fd }).then(async (r) => {
         if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || 'Upload failed') }
         return r.json()
       })
     },
     pos: (file: File, mode: 'replace' | 'append' = 'replace') => {
       const fd = new FormData(); fd.append('file', file)
-      return fetch(`${BASE}/upload/pos?mode=${mode}`, { method: 'POST', body: fd }).then(async (r) => {
+      return fetch(`${BASE}/upload/pos?mode=${mode}`, { method: 'POST', headers: authHeaders(), body: fd }).then(async (r) => {
         if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || 'Upload failed') }
         return r.json()
       })
     },
     customer: (file: File, mode: 'replace' | 'append' = 'replace') => {
       const fd = new FormData(); fd.append('file', file)
-      return fetch(`${BASE}/upload/customer?mode=${mode}`, { method: 'POST', body: fd }).then(async (r) => {
+      return fetch(`${BASE}/upload/customer?mode=${mode}`, { method: 'POST', headers: authHeaders(), body: fd }).then(async (r) => {
         if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || 'Upload failed') }
         return r.json()
       })

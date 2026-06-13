@@ -183,6 +183,11 @@ def forecast_revenue(pos_data: list, days: int = 7) -> dict:
         })
 
     mape = metrics.get("mape", 7.83)
+    source_label = (
+        f"Uploaded POS data · {len(series)} daily records"
+        if len(series) > 30
+        else "Demo seed data · upload POS CSV for live training"
+    )
     return {
         "forecast":         result,
         "model":            "XGBoost (600 trees, lag+rolling features)",
@@ -192,6 +197,7 @@ def forecast_revenue(pos_data: list, days: int = 7) -> dict:
         "training_records": len(series),
         "scale_factor":     round(scale, 4),
         "user_daily_mean":  round(user_mean, 0),
+        "last_trained":     source_label,
     }
 
 

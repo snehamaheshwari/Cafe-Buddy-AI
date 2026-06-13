@@ -524,6 +524,12 @@ export default function AIMLIntelligence() {
               <span className="card-title">Customer Segments (by Platform)</span>
               <Users size={14} className="text-slate-400" />
             </div>
+            <div className="px-4 pt-2 pb-0">
+              <p className="text-xs text-slate-400">
+                Grouped by ordering channel from uploaded POS data (Dine-in, Zomato, Swiggy, etc.).
+                Avg spend and order frequency computed per platform. No ML model — direct POS aggregation.
+              </p>
+            </div>
             <div className="card-body flex flex-col items-center">
               <PieChart width={200} height={180}>
                 <Pie data={segments} dataKey="count" cx="50%" cy="50%" outerRadius={80} innerRadius={40}>

@@ -61,24 +61,21 @@ export default function CafeOS() {
                 <span className="text-sm font-medium text-emerald-600">Operational · {health?.uptime}</span>
               </div>
             </div>
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="grid grid-cols-3 gap-4">
               <div className="bg-white rounded border border-slate-200 p-3 text-center">
-                <div className="text-2xl font-bold text-rose-500">{health?.models_active ?? '—'}</div>
+                <div className="text-2xl font-bold text-rose-500">{health?.models_active ?? 0}</div>
                 <div className="text-xs text-slate-500 mt-0.5">Active AI Models</div>
+                <div className="text-xs text-slate-400 mt-1">XGBoost · Apriori · Sentiment · Pricing · Peak · Popularity</div>
               </div>
               <div className="bg-white rounded border border-slate-200 p-3 text-center">
-                <div className="text-2xl font-bold text-slate-900">{health?.decisions_automated_today ?? '—'}</div>
-                <div className="text-xs text-slate-500 mt-0.5">Decisions Automated Today</div>
+                <div className="text-2xl font-bold text-slate-900">{health?.decisions_automated_today ?? 0}</div>
+                <div className="text-xs text-slate-500 mt-0.5">Decisions Approved Today</div>
+                <div className="text-xs text-slate-400 mt-1">Approved in What To Do Next</div>
               </div>
               <div className="bg-white rounded border border-slate-200 p-3 text-center">
-                <div className="text-2xl font-bold text-emerald-600">
-                  ₹{health ? (health.revenue_impact_today / 1000).toFixed(1) + 'k' : '—'}
-                </div>
-                <div className="text-xs text-slate-500 mt-0.5">Revenue Impact Today</div>
-              </div>
-              <div className="bg-white rounded border border-slate-200 p-3 text-center">
-                <div className="text-2xl font-bold text-brand-500">{health?.alerts_fired ?? '—'}</div>
-                <div className="text-xs text-slate-500 mt-0.5">Alerts Fired</div>
+                <div className="text-2xl font-bold text-amber-500">{health?.alerts_fired ?? 0}</div>
+                <div className="text-xs text-slate-500 mt-0.5">Pending Recommendations</div>
+                <div className="text-xs text-slate-400 mt-1">Awaiting approval in Decision Engine</div>
               </div>
             </div>
           </div>
@@ -114,7 +111,7 @@ export default function CafeOS() {
               <Activity size={14} className="text-rose-500" />
               <span className="card-title">Autonomous Actions Feed</span>
             </div>
-            <span className="text-xs text-slate-400">Approved decisions + AI model actions</span>
+            <span className="text-xs text-slate-400">Decisions you approved in <strong>What To Do Next</strong> appear here automatically</span>
           </div>
           <div className="card-body space-y-3">
             {actions.map((action: any) => {
