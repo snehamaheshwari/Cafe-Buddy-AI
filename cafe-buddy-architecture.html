@@ -1,0 +1,782 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=1500">
+  <title>Cafe Buddy AI — System Architecture</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
+      background: #F1F5F9;
+      padding: 36px;
+      color: #1E293B;
+      font-size: 12px;
+      min-width: 1500px;
+    }
+
+    .diagram {
+      width: 1420px;
+      margin: 0 auto;
+    }
+
+    /* ── HEADER ─────────────────────────────────────────────────────────── */
+    .header {
+      background: linear-gradient(135deg, #0F172A 0%, #1E3A5F 100%);
+      color: white;
+      padding: 22px 32px;
+      border-radius: 14px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.18);
+    }
+    .header-left h1 {
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: -0.4px;
+    }
+    .header-left p {
+      color: #94A3B8;
+      font-size: 13px;
+      margin-top: 4px;
+    }
+    .header-right {
+      text-align: right;
+      font-size: 12px;
+    }
+    .header-right .live {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(16,185,129,0.2);
+      border: 1px solid #10B981;
+      color: #6EE7B7;
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+    .header-right .live::before {
+      content: '';
+      width: 6px; height: 6px;
+      background: #10B981;
+      border-radius: 50%;
+    }
+    .header-right .stack {
+      color: #64748B;
+      font-size: 11px;
+    }
+
+    /* ── LAYER SECTIONS ─────────────────────────────────────────────────── */
+    .layer {
+      border-radius: 12px;
+      padding: 18px 20px;
+      margin-bottom: 6px;
+      border: 1.5px solid;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+    }
+
+    .layer-title {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 1.6px;
+      text-transform: uppercase;
+      margin-bottom: 14px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .layer-title span { flex-shrink: 0; }
+    .layer-title::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      opacity: 0.2;
+      background: currentColor;
+    }
+
+    /* colour themes */
+    .layer-data       { background: #FFFBEB; border-color: #F59E0B; }
+    .layer-data       .layer-title { color: #92400E; }
+
+    .layer-frontend   { background: #EFF6FF; border-color: #3B82F6; }
+    .layer-frontend   .layer-title { color: #1D4ED8; }
+
+    .layer-backend    { background: #F5F3FF; border-color: #7C3AED; }
+    .layer-backend    .layer-title { color: #5B21B6; }
+
+    .layer-intel      { background: #F0FDF4; border-color: #16A34A; }
+    .layer-intel      .layer-title { color: #14532D; }
+
+    .layer-infra      { background: #F8FAFC; border-color: #64748B; }
+    .layer-infra      .layer-title { color: #334155; }
+
+    /* ── GRID HELPERS ───────────────────────────────────────────────────── */
+    .grid-5 { display: grid; grid-template-columns: repeat(5,1fr); gap: 12px; }
+    .grid-4 { display: grid; grid-template-columns: repeat(4,1fr); gap: 12px; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3,1fr); gap: 12px; }
+
+    /* ── WHITE COMPONENT CARDS ──────────────────────────────────────────── */
+    .card {
+      background: #FFFFFF;
+      border: 1px solid #E2E8F0;
+      border-radius: 9px;
+      padding: 12px 14px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    }
+
+    .card-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: #0F172A;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 6px;
+    }
+    .card-title .icon { font-size: 15px; line-height:1; }
+
+    .card-sub {
+      font-size: 10px;
+      color: #94A3B8;
+      font-weight: 500;
+      margin-bottom: 5px;
+    }
+
+    ul.items {
+      list-style: none;
+      padding: 0;
+    }
+    ul.items li {
+      font-size: 11px;
+      color: #475569;
+      padding: 1.5px 0 1.5px 12px;
+      position: relative;
+      line-height: 1.4;
+    }
+    ul.items li::before {
+      content: '›';
+      position: absolute;
+      left: 0;
+      color: #CBD5E1;
+      font-weight: 700;
+    }
+    ul.items li b { color: #1E293B; font-weight: 600; }
+
+    /* ── CONNECTOR ROWS ─────────────────────────────────────────────────── */
+    .connector {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 28px;
+      position: relative;
+    }
+    .connector-pill {
+      background: #FFFFFF;
+      border: 1px solid #CBD5E1;
+      color: #64748B;
+      padding: 3px 16px;
+      border-radius: 20px;
+      font-size: 10px;
+      font-weight: 600;
+      white-space: nowrap;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+    }
+    .connector-pill.up-down::before { content: '↕ '; }
+    .connector-pill.down::before    { content: '↓ '; }
+
+    /* ── INTELLIGENCE LAYER — 2-COLUMN SPLIT ────────────────────────────── */
+    .intel-wrap {
+      display: grid;
+      grid-template-columns: 1fr 286px;
+      gap: 14px;
+    }
+
+    .ext-panel {
+      background: #F0F9FF;
+      border: 1.5px solid #38BDF8;
+      border-radius: 9px;
+      padding: 14px;
+    }
+    .ext-panel-title {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 1.4px;
+      text-transform: uppercase;
+      color: #0369A1;
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .ext-panel-title::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: #BAE6FD;
+    }
+
+    .ext-card {
+      background: white;
+      border: 1px solid #BAE6FD;
+      border-radius: 7px;
+      padding: 10px 12px;
+      margin-bottom: 8px;
+    }
+    .ext-card:last-child { margin-bottom: 0; }
+    .ext-card-title {
+      font-size: 11px;
+      font-weight: 700;
+      color: #0C4A6E;
+      margin-bottom: 2px;
+    }
+    .ext-card-sub {
+      font-size: 10px;
+      color: #0284C7;
+      margin-bottom: 4px;
+    }
+
+    /* ── INFRASTRUCTURE — HORIZONTAL PIPELINE ───────────────────────────── */
+    .pipeline {
+      display: flex;
+      align-items: stretch;
+      gap: 0;
+    }
+    .pipe-card {
+      flex: 1;
+      background: white;
+      border: 1px solid #CBD5E1;
+      border-radius: 9px;
+      padding: 12px 14px;
+    }
+    .pipe-arrow {
+      display: flex;
+      align-items: center;
+      padding: 0 6px;
+      color: #94A3B8;
+      font-size: 18px;
+      font-weight: 300;
+      flex-shrink: 0;
+    }
+    .pipe-card-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: #0F172A;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 4px;
+    }
+    .pipe-card-sub {
+      font-size: 10px;
+      color: #94A3B8;
+      margin-bottom: 6px;
+    }
+
+    /* ── BADGE CHIPS ────────────────────────────────────────────────────── */
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-size: 10px;
+      font-weight: 600;
+      margin: 2px 2px 0 0;
+      vertical-align: middle;
+    }
+    .chip-amber  { background: #FEF3C7; color: #92400E; }
+    .chip-blue   { background: #DBEAFE; color: #1E40AF; }
+    .chip-purple { background: #EDE9FE; color: #5B21B6; }
+    .chip-green  { background: #D1FAE5; color: #065F46; }
+    .chip-sky    { background: #E0F2FE; color: #0369A1; }
+    .chip-slate  { background: #F1F5F9; color: #334155; }
+    .chip-red    { background: #FEE2E2; color: #991B1B; }
+
+    /* ── FOOTER ─────────────────────────────────────────────────────────── */
+    .footer {
+      margin-top: 18px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .legend {
+      display: flex;
+      gap: 14px;
+      flex-wrap: wrap;
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 10.5px;
+      color: #64748B;
+    }
+    .legend-swatch {
+      width: 13px; height: 13px;
+      border-radius: 3px;
+      border: 1.5px solid;
+    }
+    .footer-right {
+      font-size: 10.5px;
+      color: #94A3B8;
+      text-align: right;
+    }
+  </style>
+</head>
+<body>
+<div class="diagram">
+
+  <!-- ════════════════════════════════ HEADER ════════════════════════════════ -->
+  <div class="header">
+    <div class="header-left">
+      <h1>☕ Cafe Buddy AI &nbsp;—&nbsp; System Architecture</h1>
+      <p>End-to-end AI-powered café intelligence platform &nbsp;·&nbsp; Data → ML → Decisions → Deployment</p>
+    </div>
+    <div class="header-right">
+      <div class="live">LIVE &nbsp; aicafebuddy.com</div><br>
+      <div class="stack">FastAPI &nbsp;·&nbsp; React 18 &nbsp;·&nbsp; XGBoost &nbsp;·&nbsp; Apriori &nbsp;·&nbsp; Claude API &nbsp;·&nbsp; Railway</div>
+    </div>
+  </div>
+
+
+  <!-- ═══════════════════════ LAYER 1 — DATA SOURCES ════════════════════════ -->
+  <div class="layer layer-data">
+    <div class="layer-title"><span>① Data Sources &nbsp;—&nbsp; Owner Input (CSV / Excel uploads)</span></div>
+    <div class="grid-5">
+
+      <div class="card">
+        <div class="card-title"><span class="icon">📊</span> Financial Data</div>
+        <div class="card-sub">POST /api/upload/financial</div>
+        <ul class="items">
+          <li>Date, Revenue</li>
+          <li>Expense, Profit</li>
+          <li>Tax amounts</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><span class="icon">🧾</span> POS Sales Data</div>
+        <div class="card-sub">POST /api/upload/pos</div>
+        <ul class="items">
+          <li>Order ID, Item Name</li>
+          <li>Bill Amount, Cost</li>
+          <li>Date, Hour, Platform</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><span class="icon">👥</span> Customer Data</div>
+        <div class="card-sub">POST /api/upload/customer</div>
+        <ul class="items">
+          <li>Customer ID, Name</li>
+          <li>Visits, Lifetime Spend</li>
+          <li>Segment</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><span class="icon">⭐</span> Reviews Data</div>
+        <div class="card-sub">POST /api/upload/reviews</div>
+        <ul class="items">
+          <li>Review text</li>
+          <li>Rating (1–5), Date</li>
+          <li>Platform source</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><span class="icon">🍽️</span> Menu Catalogue</div>
+        <div class="card-sub">POST /api/upload/menu</div>
+        <ul class="items">
+          <li>Item name, Base price</li>
+          <li>Category, Season</li>
+          <li>Veg / Non-veg, SKU</li>
+        </ul>
+      </div>
+
+    </div>
+  </div><!-- /layer-data -->
+
+
+  <div class="connector">
+    <span class="connector-pill down">HTTPS Upload · Column auto-detection (30+ aliases per field, 3-pass matching) · Rows normalised and persisted to Railway Volume</span>
+  </div>
+
+
+  <!-- ════════════════════════ LAYER 2 — FRONTEND ════════════════════════════ -->
+  <div class="layer layer-frontend">
+    <div class="layer-title"><span>② Presentation Layer &nbsp;—&nbsp; React 18 &nbsp;+&nbsp; TypeScript 5 &nbsp;+&nbsp; Vite 5</span></div>
+    <div class="grid-3">
+
+      <div class="card">
+        <div class="card-title"><span class="icon">🔐</span> Auth &amp; Access Control</div>
+        <ul class="items">
+          <li><b>AuthContext</b> — session state + <code>/api/auth/me</code> polling on every tab focus</li>
+          <li><b>PermissionRoute</b> — RBAC gate wrapping every page route</li>
+          <li><b>apiFetch.ts</b> — injects X-Username + X-Role on every request</li>
+          <li>3 system roles: <b>admin</b> / <b>sub_admin</b> / <b>viewer</b> + custom roles</li>
+          <li>Session stored in localStorage as <code>{username, role, permissions[]}</code></li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><span class="icon">📱</span> 11 Role-Gated Pages</div>
+        <ul class="items">
+          <li><b>Dashboard</b> — KPIs, forecast chart, platform split</li>
+          <li><b>Upload My Data</b> — 5-section upload + template download</li>
+          <li><b>Reports &amp; Insights</b> — data quality, column map</li>
+          <li><b>Smart Analytics</b> — 7 ML model sections</li>
+          <li><b>What To Do Next</b> — approve / reject decisions</li>
+          <li><b>AI-Powered Execution</b> — approved action feed</li>
+          <li><b>Ask Cafe Buddy</b> — streaming AI chat</li>
+          <li><b>Market Radar</b> — competitor radar chart</li>
+          <li><b>WhatsApp Alerts</b> · <b>Role Mgmt</b> · <b>Audit Log</b></li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><span class="icon">📦</span> UI Stack &amp; API Client</div>
+        <ul class="items">
+          <li><b>React Router 6</b> — SPA routing with nested guards</li>
+          <li><b>Recharts</b> — line, bar, radar, heatmap charts</li>
+          <li><b>Tailwind CSS 3</b> — utility-first styling</li>
+          <li><b>Lucide React</b> — icon set</li>
+          <li><b>api.ts</b> — fully typed REST client for all endpoints</li>
+          <li>SSE streaming for chatbot responses</li>
+          <li>Template download via dynamic <code>&lt;a&gt;</code> element</li>
+        </ul>
+      </div>
+
+    </div>
+  </div><!-- /layer-frontend -->
+
+
+  <div class="connector">
+    <span class="connector-pill up-down">JSON REST API + Server-Sent Events (SSE) &nbsp;·&nbsp; Audit middleware captures every authenticated request (username, role, duration, IP)</span>
+  </div>
+
+
+  <!-- ════════════════════════ LAYER 3 — BACKEND ═════════════════════════════ -->
+  <div class="layer layer-backend">
+    <div class="layer-title"><span>③ Application Layer &nbsp;—&nbsp; FastAPI 0.104 &nbsp;+&nbsp; Python 3.11 &nbsp;+&nbsp; Uvicorn &nbsp;·&nbsp; 50+ REST routes</span></div>
+    <div class="grid-4">
+
+      <div class="card">
+        <div class="card-title"><span class="icon">🔌</span> REST API &nbsp;<span class="chip chip-purple">main.py</span></div>
+        <ul class="items">
+          <li>Auth, Dashboard, ML, Layer 4/5 routes</li>
+          <li>HTTP audit middleware (all requests)</li>
+          <li>CORS middleware, static file serving</li>
+          <li>Decision approve / reject + override store</li>
+          <li>Mock seed data when no upload present</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><span class="icon">📤</span> Multi Upload &nbsp;<span class="chip chip-purple">multi_upload.py</span></div>
+        <ul class="items">
+          <li>5 typed upload endpoints</li>
+          <li>pandas <code>read_excel</code> / <code>read_csv</code></li>
+          <li>3-pass column alias detection</li>
+          <li>Append / Replace mode (POS, Customer)</li>
+          <li>CSV template download endpoint</li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><span class="icon">💾</span> Data Store &nbsp;<span class="chip chip-purple">data_store.py</span></div>
+        <ul class="items">
+          <li>Shared in-memory state (5 typed datasets)</li>
+          <li>JSON persistence to Railway Volume</li>
+          <li><code>save_dataset / load_dataset / clear_dataset</code></li>
+          <li>Survives container restarts and re-deploys</li>
+          <li>Analytics helpers: <code>item_stats, platform_breakdown</code></li>
+        </ul>
+      </div>
+
+      <div class="card">
+        <div class="card-title"><span class="icon">🛡️</span> System Services</div>
+        <ul class="items">
+          <li><b>role_store.py</b> — RBAC roles, users, permissions</li>
+          <li><b>audit_store.py</b> — event log, CSV export</li>
+          <li><b>cafe_os_models.py</b> — CafeOS decision models</li>
+          <li><b>peer_comparison.py</b> — competitor DB (100+ cafés)</li>
+          <li>10 Indian cities · 30+ areas · live DDG search</li>
+        </ul>
+      </div>
+
+    </div>
+  </div><!-- /layer-backend -->
+
+
+  <div class="connector">
+    <span class="connector-pill down">Internal function calls &nbsp;·&nbsp; Lazy-loaded + cached ML models &nbsp;·&nbsp; Optional Anthropic Claude API &nbsp;·&nbsp; DuckDuckGo search</span>
+  </div>
+
+
+  <!-- ═══════════════════════ LAYER 4 — INTELLIGENCE ════════════════════════ -->
+  <div class="layer layer-intel">
+    <div class="layer-title"><span>④ Intelligence Layer &nbsp;—&nbsp; ML Models &nbsp;+&nbsp; AI Services &nbsp;(ml_models.py · sentiment_engine.py · chatbot.py)</span></div>
+    <div class="intel-wrap">
+
+      <!-- ML MODELS — left column -->
+      <div class="grid-5">
+
+        <div class="card">
+          <div class="card-title"><span class="icon">📈</span> Revenue Forecast</div>
+          <div class="card-sub">xgboost_model.joblib</div>
+          <ul class="items">
+            <li><b>XGBoost</b> — 600 trees</li>
+            <li>MAPE 7.83%</li>
+            <li>MAE ₹5,153</li>
+            <li>Lag + rolling features</li>
+            <li>30-day forward</li>
+            <li>±15% confidence band</li>
+          </ul>
+        </div>
+
+        <div class="card">
+          <div class="card-title"><span class="icon">🔗</span> Cross-sell</div>
+          <div class="card-sub">cross_sell_rules.pkl</div>
+          <ul class="items">
+            <li><b>Apriori</b> rules</li>
+            <li>1,698 total rules</li>
+            <li>Filter: lift ≥ 1.5</li>
+            <li>Filter: conf ≥ 5%</li>
+            <li>8 rules qualify</li>
+            <li>POS co-occ. fallback</li>
+          </ul>
+        </div>
+
+        <div class="card">
+          <div class="card-title"><span class="icon">💬</span> Sentiment</div>
+          <div class="card-sub">sentiment_model.pkl</div>
+          <ul class="items">
+            <li><b>Logistic Regression</b></li>
+            <li>TF-IDF vectoriser</li>
+            <li>NLTK tokenisation</li>
+            <li>Neg / Neu / Pos</li>
+            <li>5-dim aspect analysis</li>
+            <li>NPS score + trends</li>
+          </ul>
+        </div>
+
+        <div class="card">
+          <div class="card-title"><span class="icon">💰</span> Dynamic Pricing</div>
+          <div class="card-sub">data-driven (no hardcoding)</div>
+          <ul class="items">
+            <li>Menu catalogue filter</li>
+            <li>Margin from real data</li>
+            <li>≥55% → Increase +8%</li>
+            <li>40–55% → Increase +5%</li>
+            <li>25–40% → Hold</li>
+            <li>&lt;25% → Review + reason</li>
+          </ul>
+        </div>
+
+        <div class="card">
+          <div class="card-title"><span class="icon">⚙️</span> Other Models</div>
+          <div class="card-sub">POS-driven analytics</div>
+          <ul class="items">
+            <li><b>RF</b> — Peak hour heatmap</li>
+            <li><b>XGBoost</b> — Cancel risk</li>
+            <li><b>Ridge</b> — Per-platform fcst</li>
+            <li><b>Decision Engine</b></li>
+            <li>KPI period-over-period</li>
+            <li>Customer segmentation</li>
+          </ul>
+        </div>
+
+      </div><!-- /ml grid -->
+
+      <!-- EXTERNAL AI SERVICES — right column -->
+      <div class="ext-panel">
+        <div class="ext-panel-title"><span>⚡ External AI &amp; APIs</span></div>
+
+        <div class="ext-card">
+          <div class="ext-card-title">🤖 Anthropic Claude API</div>
+          <div class="ext-card-sub">claude-3-haiku · Streaming SSE</div>
+          <ul class="items">
+            <li>AI Chatbot — context-aware</li>
+            <li>Market Radar analysis</li>
+            <li>Fallback: smart analytics</li>
+            <li>Auth: ANTHROPIC_API_KEY env var</li>
+          </ul>
+        </div>
+
+        <div class="ext-card">
+          <div class="ext-card-title">🔍 DuckDuckGo Search</div>
+          <div class="ext-card-sub">DDGS · No API key required</div>
+          <ul class="items">
+            <li>Live competitor data</li>
+            <li>Festival / market queries</li>
+            <li>Injected into Claude context</li>
+          </ul>
+        </div>
+
+        <div class="ext-card">
+          <div class="ext-card-title">📱 Green API (WhatsApp)</div>
+          <div class="ext-card-sub">User-provided credentials</div>
+          <ul class="items">
+            <li>Daily revenue digest</li>
+            <li>Low-stock alerts</li>
+            <li>Peak hour reminders</li>
+          </ul>
+        </div>
+      </div><!-- /ext-panel -->
+
+    </div>
+  </div><!-- /layer-intel -->
+
+
+  <div class="connector">
+    <span class="connector-pill down">git push origin master:main → Railway webhook fires → Docker build starts</span>
+  </div>
+
+
+  <!-- ════════════════════════ LAYER 5 — INFRASTRUCTURE ═════════════════════ -->
+  <div class="layer layer-infra">
+    <div class="layer-title"><span>⑤ Infrastructure &nbsp;—&nbsp; Code Versioning &nbsp;·&nbsp; CI/CD Pipeline &nbsp;·&nbsp; Cloud Deployment</span></div>
+    <div class="pipeline">
+
+      <div class="pipe-card">
+        <div class="pipe-card-title"><span>🐙</span> GitHub Repository</div>
+        <div class="pipe-card-sub">snehamaheshwari / Cafe-Buddy-AI</div>
+        <ul class="items">
+          <li><b>main</b> branch — Railway deploy target</li>
+          <li><b>master</b> branch — dev working branch</li>
+          <li>Webhook: push to main triggers deploy</li>
+          <li>Auto-deploy enabled in Railway Settings</li>
+        </ul>
+        <div style="margin-top:8px">
+          <span class="chip chip-slate">Git versioning</span>
+          <span class="chip chip-slate">Webhook</span>
+        </div>
+      </div>
+
+      <div class="pipe-arrow">→</div>
+
+      <div class="pipe-card">
+        <div class="pipe-card-title"><span>🚂</span> Railway Cloud</div>
+        <div class="pipe-card-sub">project: authentic-imagination · service: Cafe-Buddy-AI</div>
+        <ul class="items">
+          <li>Auto-deploy on every push to <b>main</b></li>
+          <li>Builder: Dockerfile (railway.toml)</li>
+          <li>Restart policy: on_failure · max 5 retries</li>
+          <li>Environment: production</li>
+          <li>Domain: <b>aicafebuddy.com</b></li>
+        </ul>
+        <div style="margin-top:8px">
+          <span class="chip chip-green">Auto-deploy</span>
+          <span class="chip chip-slate">Custom domain</span>
+        </div>
+      </div>
+
+      <div class="pipe-arrow">→</div>
+
+      <div class="pipe-card">
+        <div class="pipe-card-title"><span>🐳</span> Docker 2-Stage Build</div>
+        <div class="pipe-card-sub">Dockerfile</div>
+        <ul class="items">
+          <li><b>Stage 1 — node:18-alpine</b></li>
+          <li>&nbsp;&nbsp;&nbsp;npm ci → vite build → /dist</li>
+          <li><b>Stage 2 — python:3.11-slim</b></li>
+          <li>&nbsp;&nbsp;&nbsp;gcc (pandas / scikit-learn)</li>
+          <li>&nbsp;&nbsp;&nbsp;pip install -r requirements.txt</li>
+          <li>&nbsp;&nbsp;&nbsp;NLTK punkt + stopwords download</li>
+          <li>&nbsp;&nbsp;&nbsp;Copy backend + React dist</li>
+          <li>&nbsp;&nbsp;&nbsp;uvicorn main:app --port $PORT</li>
+        </ul>
+        <div style="margin-top:8px">
+          <span class="chip chip-blue">Node 18</span>
+          <span class="chip chip-blue">Python 3.11</span>
+        </div>
+      </div>
+
+      <div class="pipe-arrow">→</div>
+
+      <div class="pipe-card">
+        <div class="pipe-card-title"><span>☁️</span> Live Container</div>
+        <div class="pipe-card-sub">Production · Port 8080</div>
+        <ul class="items">
+          <li>FastAPI + React SPA on port 8080</li>
+          <li><code>/api/*</code> → FastAPI routes</li>
+          <li><code>/*</code> → React index.html (SPA)</li>
+          <li>SSE streaming on <code>/api/chatbot/chat</code></li>
+        </ul>
+        <div style="margin-top:8px">
+          <span class="chip chip-green">Running</span>
+          <span class="chip chip-slate">uvicorn</span>
+        </div>
+      </div>
+
+      <div class="pipe-arrow">+</div>
+
+      <div class="pipe-card" style="border-color:#7C3AED; background:#F5F3FF;">
+        <div class="pipe-card-title"><span>💽</span> Railway Volume</div>
+        <div class="pipe-card-sub">/app/backend/data</div>
+        <ul class="items">
+          <li><b>pos.json</b> — uploaded POS rows</li>
+          <li><b>menu.json</b> — menu catalogue</li>
+          <li><b>financial.json</b> — financial data</li>
+          <li><b>customer.json</b> — CRM data</li>
+          <li><b>reviews.json</b> — review data</li>
+          <li><b>roles.json</b> — RBAC users &amp; roles</li>
+          <li><b>audit_log.json</b> — full audit trail</li>
+          <li>Persists across ALL deployments</li>
+        </ul>
+        <div style="margin-top:8px">
+          <span class="chip chip-purple">Persistent</span>
+          <span class="chip chip-purple">Survives redeploy</span>
+        </div>
+      </div>
+
+    </div>
+  </div><!-- /layer-infra -->
+
+
+  <!-- ═══════════════════════════════ FOOTER ═════════════════════════════════ -->
+  <div class="footer">
+    <div class="legend">
+      <div class="legend-item">
+        <div class="legend-swatch" style="background:#FFFBEB; border-color:#F59E0B;"></div>
+        Data Sources
+      </div>
+      <div class="legend-item">
+        <div class="legend-swatch" style="background:#EFF6FF; border-color:#3B82F6;"></div>
+        Presentation (React)
+      </div>
+      <div class="legend-item">
+        <div class="legend-swatch" style="background:#F5F3FF; border-color:#7C3AED;"></div>
+        Application (FastAPI)
+      </div>
+      <div class="legend-item">
+        <div class="legend-swatch" style="background:#F0FDF4; border-color:#16A34A;"></div>
+        Intelligence (ML / AI)
+      </div>
+      <div class="legend-item">
+        <div class="legend-swatch" style="background:#F0F9FF; border-color:#38BDF8;"></div>
+        External APIs
+      </div>
+      <div class="legend-item">
+        <div class="legend-swatch" style="background:#F8FAFC; border-color:#64748B;"></div>
+        Infrastructure
+      </div>
+      <div class="legend-item">
+        <div class="legend-swatch" style="background:#F5F3FF; border-color:#7C3AED;"></div>
+        Persistent Volume
+      </div>
+    </div>
+    <div class="footer-right">
+      Cafe Buddy AI &nbsp;·&nbsp; aicafebuddy.com &nbsp;·&nbsp; June 2026<br>
+      <span style="color:#CBD5E1;">github.com/snehamaheshwari/Cafe-Buddy-AI</span>
+    </div>
+  </div>
+
+</div><!-- /diagram -->
+</body>
+</html>
