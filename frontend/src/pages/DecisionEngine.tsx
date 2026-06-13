@@ -94,6 +94,18 @@ export default function DecisionEngine() {
           ))}
         </div>
 
+        {/* ── How suggestions are generated ── */}
+        <div className="rounded-lg border border-indigo-200 bg-indigo-50 px-4 py-3 text-xs text-indigo-800 leading-relaxed space-y-1.5">
+          <p className="font-semibold text-indigo-900">How these suggestions are calculated</p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1">
+            <p>💰 <strong>Pricing</strong> — Items with margin &gt; 45 % that are in your top-5 by revenue get a price-increase suggestion. Uplift % = min(15, (margin − 35) ÷ 5), so a 55 % margin item gets ~+4 %, a 70 % item gets ~+7 %.</p>
+            <p>🍽️ <strong>Menu</strong> — Bottom 2 items by margin (below 30 %) are flagged for recipe cost review or bundling.</p>
+            <p>📣 <strong>Marketing</strong> — Your highest-revenue platform is identified; recent half of your data is compared with the earlier half to detect growth momentum. A 15 % revenue-lift scenario is modelled.</p>
+            <p>👥 <strong>Staffing</strong> — Weekend avg revenue vs weekday avg revenue is compared. If weekends are ≥ 15 % busier, a staffing alert fires with an estimated service-delay calculation.</p>
+          </div>
+          <p className="text-indigo-600 mt-1">All inputs come from your <strong>uploaded POS data</strong>. Sentiment decisions (⭐) are generated separately from your uploaded customer reviews via the Logistic Regression sentiment model.</p>
+        </div>
+
         {/* Decision Cards */}
         <div className="space-y-3">
           {decisions.length === 0 && (

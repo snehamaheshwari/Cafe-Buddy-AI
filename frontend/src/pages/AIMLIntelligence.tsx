@@ -560,6 +560,13 @@ export default function AIMLIntelligence() {
           {/* High Potential */}
           <div className="card">
             <div className="card-header"><span className="card-title">High Potential Items</span><Target size={14} className="text-slate-400" /></div>
+            <div className="px-4 pt-2 pb-0">
+              <p className="text-xs text-slate-400 leading-relaxed">
+                <strong>Source:</strong> Uploaded POS data · <strong>Formula:</strong>{' '}
+                Margin&nbsp;%&nbsp;=&nbsp;(Revenue&nbsp;−&nbsp;Cost)&nbsp;÷&nbsp;Revenue&nbsp;×&nbsp;100.{' '}
+                Top 4 items by margin percentage are shown. Weekly orders = total units ÷ data-days × 7.
+              </p>
+            </div>
             <table className="table-base">
               <thead><tr><th>Item</th><th>Margin</th><th>Wkly</th></tr></thead>
               <tbody>
@@ -577,6 +584,13 @@ export default function AIMLIntelligence() {
           {/* Low Performers */}
           <div className="card">
             <div className="card-header"><span className="card-title">Low Performers</span><Zap size={14} className="text-red-400" /></div>
+            <div className="px-4 pt-2 pb-0">
+              <p className="text-xs text-slate-400 leading-relaxed">
+                <strong>Source:</strong> Uploaded POS data · <strong>Formula:</strong>{' '}
+                Same margin calculation as above. Bottom 3 items by margin percentage are shown.{' '}
+                Items with margin below 30% are also automatically flagged in <em>What To Do Next</em>.
+              </p>
+            </div>
             <table className="table-base">
               <thead><tr><th>Item</th><th>Margin</th><th>Action</th></tr></thead>
               <tbody>
