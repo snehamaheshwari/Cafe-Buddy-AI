@@ -149,6 +149,22 @@ export default function CafeOS() {
           </div>
         </div>
 
+        {/* Autonomous Actions Feed — Logic Explanation */}
+        <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs text-emerald-800 leading-relaxed space-y-1.5">
+          <p className="font-semibold text-emerald-900">Where does the Autonomous Actions Feed come from?</p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1.5">
+            <div>
+              <p className="font-medium mb-0.5">✅ Source 1 — Your approved decisions</p>
+              <p>Every decision you click <strong>Approve</strong> on in <em>What To Do Next</em> is stored in an in-memory override table. The feed reads that table and surfaces each approved item here with status <em>"completed"</em> and trigger <em>"User Approved — Decision Engine"</em>.</p>
+            </div>
+            <div>
+              <p className="font-medium mb-0.5">🤖 Source 2 — ML model actions</p>
+              <p>The XGBoost demand-forecast and price-optimisation models (from <code className="bg-emerald-100 px-1 rounded">cafe_os_models.py</code>) independently generate price-rise / daypart / weekend-variance alerts. These appear in the feed automatically when pre-trained model files are present — no approval required.</p>
+            </div>
+          </div>
+          <p className="text-emerald-700">⚠️ <strong>Note:</strong> Approved decisions reset when a new data file is uploaded or the server restarts, because overrides are stored in memory (not persisted to disk). Re-approve decisions after uploading fresh POS data.</p>
+        </div>
+
         {/* How It Works */}
         <div className="card">
           <div className="card-header"><span className="card-title">How AI-Powered Execution Works</span></div>

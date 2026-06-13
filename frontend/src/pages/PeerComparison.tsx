@@ -493,6 +493,31 @@ export default function PeerComparison() {
 
       <div className="p-4 md:p-6 space-y-6 flex-1">
 
+        {/* ── Data Source Info Banner ── */}
+        <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 flex flex-col sm:flex-row sm:items-start gap-3">
+          <div className="flex-shrink-0 mt-0.5">
+            <span className="text-blue-500 text-lg">ℹ️</span>
+          </div>
+          <div className="space-y-1 text-xs text-blue-800 leading-relaxed">
+            <p className="font-semibold text-blue-900">How Market Radar data is sourced</p>
+            <p>
+              <strong>Competitor profiles</strong> (ratings, avg order value, delivery time, specialties, seating) come from a
+              curated local database covering 8 Indian cities — Mumbai, Delhi NCR, Bangalore, Hyderabad,
+              Pune, Chennai, Kolkata, and Jaipur. Select your city and area to see cafés in that micro-market.
+            </p>
+            <p>
+              <strong>Radar scores</strong> (Rating, Price, Delivery, Menu, Popularity, Value) are normalised
+              0–100 values computed from each competitor's raw profile data so you can compare across dimensions at a glance.
+            </p>
+            <p>
+              <strong>AI Market Insights</strong> — the "Run AI Analysis" button sends the selected competitor data to
+              the <strong>Anthropic Claude API</strong> and returns a GPT-style strategic summary (positioning gaps,
+              quick wins, threats). This requires an <code className="bg-blue-100 px-1 rounded">ANTHROPIC_API_KEY</code> set
+              in your Railway environment variables. See the note below the radar chart for setup instructions.
+            </p>
+          </div>
+        </div>
+
         {/* ── ROW 1: Controls ── */}
         <div className="card p-5">
           <div className="flex flex-wrap items-end gap-4">
@@ -653,8 +678,18 @@ export default function PeerComparison() {
                 </div>
                 <div>
                   <h2 className="text-slate-900 font-bold text-base leading-tight">AI Market Insights</h2>
-                  <p className="text-xs text-slate-500">Powered by Claude AI</p>
+                  <p className="text-xs text-slate-500">Powered by Claude AI (Anthropic)</p>
                 </div>
+              </div>
+
+              {/* API key requirement note */}
+              <div className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 leading-relaxed">
+                <span className="font-semibold">Requires API key: </span>
+                Get your <strong>Anthropic API key</strong> at{' '}
+                <a href="https://console.anthropic.com" target="_blank" rel="noreferrer"
+                   className="underline text-amber-900 font-medium">console.anthropic.com</a>
+                {' '}→ add it to Railway as env var <code className="bg-amber-100 px-1 rounded">ANTHROPIC_API_KEY</code>.
+                The same key also powers the AI Chatbot. The <em>claude-opus-4-5</em> model is used here.
               </div>
 
               {!analysis && !analyzing && (

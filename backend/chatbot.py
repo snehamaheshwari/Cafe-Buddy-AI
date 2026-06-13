@@ -601,22 +601,30 @@ def _smart_response(message: str, data: list, festivals: list, search_res: list 
         "menu performance", "item performance",
     ]):
         period_data, period_label = data, "overall"
+        # Anchor date periods to the latest date IN the dataset, not today's
+        # calendar date, so historical POS uploads always yield results.
+        all_dates = [r["date"] for r in data if r.get("date")]
+        anchor = max(all_dates) if all_dates else datetime.now().strftime("%Y-%m-%d")
+        anchor_dt = datetime.strptime(anchor, "%Y-%m-%d")
+        anchor_fmt = anchor_dt.strftime("%d %b %Y")
+
         if "last week" in m or "past week" in m or "this week" in m:
-            cut = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
-            period_data  = [r for r in data if r["date"] >= cut]
-            period_label = "last 7 days"
+            cut = (anchor_dt - timedelta(days=7)).strftime("%Y-%m-%d")
+            period_data  = [r for r in data if r.get("date", "") >= cut]
+            period_label = f"7 days up to {anchor_fmt} (as per uploaded POS data)"
         elif "last month" in m or "past month" in m:
-            cut = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
-            period_data  = [r for r in data if r["date"] >= cut]
-            period_label = "last 30 days"
+            cut = (anchor_dt - timedelta(days=30)).strftime("%Y-%m-%d")
+            period_data  = [r for r in data if r.get("date", "") >= cut]
+            period_label = f"30 days up to {anchor_fmt} (as per uploaded POS data)"
         elif "today" in m:
-            cut = datetime.now().strftime("%Y-%m-%d")
-            period_data  = [r for r in data if r["date"] == cut]
-            period_label = "today"
+            period_data  = [r for r in data if r.get("date", "") == anchor]
+            period_label = f"{anchor_fmt} (latest date in uploaded POS data)"
 
         top = item_stats(period_data)
         if not top:
-            return f"No data found for {period_label}."
+            return (f"No sales records found for {period_label}. "
+                    f"The uploaded POS data covers dates up to **{anchor_fmt}**. "
+                    f"Upload a more recent POS file to query current week data.")
         lines = [f"**Top selling items — {period_label}:**\n"]
         for i, x in enumerate(top[:3]):
             lines.append(f"{i+1}. **{x['name']}** — ₹{x['revenue']:,.0f} revenue, "
