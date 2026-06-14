@@ -302,7 +302,7 @@ async def _stream_claude(history: list, message: str,
     msgs.append({"role": "user", "content": message})
 
     with _ai_client.messages.stream(
-        model="claude-opus-4-7",
+        model="claude-3-5-haiku-20241022",
         max_tokens=1024,
         system=system_msg,
         messages=msgs,
@@ -1085,12 +1085,20 @@ async def chatbot_stream(req: ChatRequest):
         except Exception as e:
             err_msg = str(e)
             # Surface a clean message instead of raw exception text
-            if "502" in err_msg or "503" in err_msg or "timeout" in err_msg.lower():
+            if "credit balance" in err_msg.lower() or ("billing" in err_msg.lower() and "upgrade" in err_msg.lower()):
+                friendly = (
+                    "⚠️ **Anthropic account has no credits.**\n\n"
+                    "Your API key is valid, but the account balance is zero.\n\n"
+                    "**Fix:** Go to [console.anthropic.com](https://console.anthropic.com) → "
+                    "Plans & Billing → Add Credits (minimum $5).\n\n"
+                    "The chatbot will work again immediately after credits are added."
+                )
+            elif "502" in err_msg or "503" in err_msg or "timeout" in err_msg.lower():
                 friendly = "The server is temporarily busy. Please try again in a moment."
             elif "api_key" in err_msg.lower() or "authentication" in err_msg.lower():
-                friendly = "AI service authentication error. Check your ANTHROPIC_API_KEY."
+                friendly = "AI service authentication error. Check your ANTHROPIC_API_KEY in Railway Variables."
             else:
-                friendly = f"Something went wrong processing your request. Please try again."
+                friendly = "Something went wrong processing your request. Please try again."
             yield f"data: {json.dumps({'text': friendly})}\n\n"
             yield f"data: {json.dumps({'done': True, 'sources': {}})}\n\n"
 
@@ -1189,7 +1197,7 @@ def chatbot_status():
     return {
         "ai_mode":     HAS_AI,
         "web_search":  HAS_DDG,
-        "model":       "claude-opus-4-7" if HAS_AI else "Smart Analytics Engine",
+        "model":       "claude-3-5-haiku-20241022" if HAS_AI else "Smart Analytics Engine",
         "api_key_set": bool(ANTHROPIC_KEY),
     }
 
