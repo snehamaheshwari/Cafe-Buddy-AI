@@ -689,7 +689,7 @@ export default function PeerComparison() {
                 <a href="https://console.anthropic.com" target="_blank" rel="noreferrer"
                    className="underline text-amber-900 font-medium">console.anthropic.com</a>
                 {' '}→ add it to Railway as env var <code className="bg-amber-100 px-1 rounded">ANTHROPIC_API_KEY</code>.
-                The same key also powers the AI Chatbot. The <em>claude-opus-4-5</em> model is used here.
+                The same key also powers the AI Chatbot. The <em>claude-3-5-haiku-20241022</em> model is used here (fast &amp; cost-efficient).
               </div>
 
               {!analysis && !analyzing && (
@@ -722,15 +722,38 @@ export default function PeerComparison() {
 
               {analysis && !analyzing && (
                 <div className="flex-1 flex flex-col gap-4">
+
+                  {/* Billing error — show clear fix steps */}
+                  {analysis.status === 'billing_error' && (
+                    <div className="rounded-lg border border-orange-200 bg-orange-50 px-4 py-3 text-xs text-orange-800 space-y-2">
+                      <p className="font-semibold text-orange-900 flex items-center gap-1.5">
+                        <AlertTriangle size={14} /> Anthropic account has no credits
+                      </p>
+                      <p>Your API key is correctly set but the account balance is <strong>$0</strong>. The AI Analysis requires billing credits.</p>
+                      <ol className="list-decimal ml-4 space-y-1">
+                        <li>Open <a href="https://console.anthropic.com/settings/billing" target="_blank" rel="noreferrer" className="underline font-medium text-orange-900">console.anthropic.com → Plans &amp; Billing</a></li>
+                        <li>Click <strong>Add Credits</strong> — minimum $5 USD</li>
+                        <li>Come back and click <strong>Re-analyse</strong> below</li>
+                      </ol>
+                      <p className="text-orange-600">The switch to <code className="bg-orange-100 px-1 rounded">claude-3-5-haiku</code> reduces cost ~20× vs the previous Opus model.</p>
+                    </div>
+                  )}
+
+                  {/* Generic error */}
                   {analysis.status === 'error' && (
                     <div className="flex items-center gap-2 bg-red-50 border border-red-100 rounded-lg px-3 py-2 text-sm text-red-600">
                       <AlertTriangle size={14} />
-                      Analysis encountered an error
+                      <span>Analysis encountered an error — check Railway logs for details.</span>
                     </div>
                   )}
-                  <div className="flex-1 overflow-y-auto max-h-80">
-                    <AnalysisText text={analysis.analysis} />
-                  </div>
+
+                  {/* Success — render markdown text */}
+                  {analysis.status === 'success' && (
+                    <div className="flex-1 overflow-y-auto max-h-80">
+                      <AnalysisText text={analysis.analysis} />
+                    </div>
+                  )}
+
                   <div className="flex items-center justify-between pt-3 border-t border-slate-100">
                     <span className="text-xs text-slate-400 bg-slate-50 px-2 py-1 rounded-full font-mono">
                       {analysis.model}

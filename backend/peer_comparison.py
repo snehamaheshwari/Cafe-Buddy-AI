@@ -1221,7 +1221,7 @@ def live_search_competitors(city: str, area: str) -> list[dict]:
 
 def analyze_with_ai(our_cafe_stats: dict, competitors: list[dict], city: str, area: str) -> dict:
     """
-    Call the Anthropic API (claude-opus-4-5) to analyse the competitive landscape
+    Call the Anthropic API (claude-3-5-haiku-20241022) to analyse the competitive landscape
     and return structured insights.
     """
     try:
@@ -1239,7 +1239,7 @@ def analyze_with_ai(our_cafe_stats: dict, competitors: list[dict], city: str, ar
                     "4. Railway will auto-redeploy with the key active.\n\n"
                     "Your Anthropic API key can be found at console.anthropic.com"
                 ),
-                "model": "claude-opus-4-5",
+                "model": "claude-3-5-haiku-20241022",
                 "status": "error",
             }
         client = anthropic.Anthropic(api_key=api_key)
@@ -1292,7 +1292,7 @@ Provide a concise, actionable analysis covering exactly these four sections:
 Keep the analysis practical, data-driven, and specific to {area}, {city}. Use ₹ for prices."""
 
         message = client.messages.create(
-            model="claude-opus-4-5",
+            model="claude-3-5-haiku-20241022",
             max_tokens=800,
             messages=[{"role": "user", "content": prompt}],
         )
@@ -1300,14 +1300,26 @@ Keep the analysis practical, data-driven, and specific to {area}, {city}. Use �
         analysis_text = message.content[0].text if message.content else "No analysis generated."
         return {
             "analysis": analysis_text,
-            "model": "claude-opus-4-5",
+            "model": "claude-3-5-haiku-20241022",
             "status": "success",
         }
 
     except Exception as exc:
+        err_str = str(exc)
+        # Detect billing / credit errors and show a clear fix guide instead of raw JSON
+        if "credit balance" in err_str.lower() or "billing" in err_str.lower() or "payment" in err_str.lower():
+            friendly = (
+                "⚠️ **Anthropic account has no credits.**\n\n"
+                "**How to fix:**\n"
+                "1. Go to **[console.anthropic.com](https://console.anthropic.com)** → Plans & Billing\n"
+                "2. Click **Add Credits** and add a minimum of $5 USD\n"
+                "3. Come back and click **Run AI Analysis** again\n\n"
+                "Your API key is correctly set — this is purely a billing issue."
+            )
+            return {"analysis": friendly, "model": "claude-3-5-haiku-20241022", "status": "billing_error"}
         return {
             "analysis": f"AI analysis unavailable: {exc}",
-            "model": "claude-opus-4-5",
+            "model": "claude-3-5-haiku-20241022",
             "status": "error",
         }
 
