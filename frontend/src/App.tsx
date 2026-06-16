@@ -12,6 +12,7 @@ import WhatsAppNotifications from './pages/WhatsAppNotifications'
 import PeerComparison from './pages/PeerComparison'
 import RoleManagement from './pages/RoleManagement'
 import AuditLog from './pages/AuditLog'
+import TenantSettings from './pages/TenantSettings'
 import { SidebarProvider } from './context/SidebarContext'
 import { AuthProvider, useAuth } from './context/AuthContext'
 
@@ -161,6 +162,14 @@ export default function App() {
             <PrivateLayout>
               <PermissionRoute feature="audit_logs">
                 <AuditLog />
+              </PermissionRoute>
+            </PrivateLayout>
+          } />
+
+          <Route path="/settings" element={
+            <PrivateLayout>
+              <PermissionRoute feature="role_management">
+                <TenantSettings />
               </PermissionRoute>
             </PrivateLayout>
           } />

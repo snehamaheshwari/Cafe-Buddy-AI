@@ -615,40 +615,75 @@ def _calc_kpis(data: list) -> list:
 # ─────────────────────────────────────────────
 
 class LoginRequest(BaseModel):
-    username: str
-    password: str
+    username:  str
+    password:  str
+    workspace: Optional[str] = None   # tenant slug — omit for system tenant
 
 @app.post("/api/auth/login")
 def login(req: LoginRequest, request: Request = None):
-    result = _rs.authenticate(req.username, req.password)
+    """
+    Authenticate a user.
+    - If `workspace` is provided → look up tenant by slug, use TenantRoleStore
+    - Otherwise → system tenant (legacy admin/owner accounts)
+    Returns a signed JWT token that carries username + tenant_id.
+    """
+    import tenant_store as _ts
+    import auth_utils as _au
+    from role_store import get_tenant_store
+
+    ip = request.client.host if request and request.client else ""
+
+    if req.workspace:
+        tenant = _ts.get_tenant_by_slug(req.workspace)
+        if not tenant:
+            raise HTTPException(status_code=404,
+                detail=f"Workspace '{req.workspace}' not found")
+        if not tenant.get("is_active", True):
+            raise HTTPException(status_code=403, detail="Workspace is inactive")
+        tenant_id = tenant["tenant_id"]
+        store = get_tenant_store(tenant_id)
+    else:
+        tenant_id = _ts.SYSTEM_TENANT_ID
+        tenant    = None
+        store     = get_tenant_store(_ts.SYSTEM_TENANT_ID)
+
+    result = store.authenticate(req.username, req.password)
     if not result:
-        _audit.log_action(
-            username=req.username,
-            module="auth",
-            action="LOGIN",
-            description=f"Failed login attempt for user '{req.username}'",
-            status=_audit.STATUS_ERROR,
-            ip_address=(request.client.host if request and request.client else ""),
-        )
+        _audit.log_action(username=req.username, module="auth", action="LOGIN",
+            description=f"Failed login attempt for '{req.username}'"
+                        + (f" on workspace '{req.workspace}'" if req.workspace else ""),
+            status=_audit.STATUS_ERROR, ip_address=ip)
         raise HTTPException(status_code=401, detail="Invalid username or password")
-    _audit.log_action(
-        username=result["username"],
-        module="auth",
-        action="LOGIN",
-        description=f"User '{result['username']}' logged in as {result['role_name']}",
-        role=result["role_name"],
-        status=_audit.STATUS_SUCCESS,
-        ip_address=(request.client.host if request and request.client else ""),
-    )
-    return {
+
+    # Build JWT carrying tenant context
+    token_data = {
+        "username":   result["username"],
+        "tenant_id":  tenant_id,
+        "role_id":    result["role_id"],
+    }
+    token = _au.create_access_token(token_data)
+
+    _audit.log_action(username=result["username"], module="auth", action="LOGIN",
+        description=f"User '{result['username']}' logged in as {result['role_name']}"
+                    + (f" (workspace: {req.workspace})" if req.workspace else ""),
+        role=result["role_name"], status=_audit.STATUS_SUCCESS, ip_address=ip)
+
+    resp: dict = {
         "success":     True,
         "username":    result["username"],
         "full_name":   result["full_name"],
         "role":        result["role_name"],
         "role_id":     result["role_id"],
         "permissions": result["permissions"],
-        "token":       f"demo-token-{result['username']}",
+        "token":       token,
+        "tenant_id":   tenant_id,
     }
+    if tenant:
+        resp["cafe_name"]    = tenant.get("cafe_name", "")
+        resp["brand_color"]  = tenant.get("brand_color", "#6366f1")
+        resp["logo_url"]     = tenant.get("logo_url", "")
+        resp["tenant_slug"]  = tenant.get("slug", "")
+    return resp
 
 @app.get("/api/auth/me")
 def me(request: Request = None):
@@ -791,6 +826,172 @@ def logout(request: Request = None):
         ip_address=(request.client.host if request and request.client else ""),
     )
     return {"success": True, "message": "Logged out"}
+
+# ─────────────────────────────────────────────
+# MULTI-TENANT REGISTRATION & WORKSPACE API
+# ─────────────────────────────────────────────
+
+class TenantRegisterRequest(BaseModel):
+    cafe_name:    str
+    owner_name:   str
+    owner_email:  str
+    username:     str
+    password:     str
+    brand_color:  str = "#6366f1"
+    logo_url:     str = ""
+
+class TenantBrandingRequest(BaseModel):
+    cafe_name:   Optional[str] = None
+    brand_color: Optional[str] = None
+    logo_url:    Optional[str] = None
+
+
+@app.post("/api/auth/register")
+def register_tenant(req: TenantRegisterRequest, request: Request = None):
+    """
+    Register a new café workspace (tenant).
+    Creates the tenant record, hashes the admin password, and seeds
+    the admin user in the per-tenant role store.
+    Returns workspace slug and a ready-to-use JWT token.
+    """
+    import tenant_store as _ts
+    import auth_utils as _au
+    from role_store import get_tenant_store
+
+    ip = request.client.host if request and request.client else ""
+
+    # Validate password strength (min 6 chars)
+    if len(req.password.strip()) < 6:
+        raise HTTPException(status_code=400,
+            detail="Password must be at least 6 characters")
+
+    try:
+        tenant = _ts.create_tenant(
+            cafe_name=req.cafe_name,
+            owner_name=req.owner_name,
+            owner_email=req.owner_email,
+            admin_username=req.username,
+            brand_color=req.brand_color,
+            logo_url=req.logo_url,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Hash password and seed admin user in tenant's role store
+    pwd_hash = _au.hash_password(req.password)
+    store = get_tenant_store(tenant["tenant_id"])
+    store.seed_admin_user(req.username, pwd_hash)
+
+    # Issue JWT
+    token = _au.create_access_token({
+        "username":  req.username,
+        "tenant_id": tenant["tenant_id"],
+        "role_id":   "admin",
+    })
+
+    _audit.log_action(username=req.username, module="auth", action="REGISTER",
+        description=f"New workspace registered: '{req.cafe_name}' (slug={tenant['slug']})",
+        status=_audit.STATUS_SUCCESS, ip_address=ip)
+
+    return {
+        "success":      True,
+        "message":      f"Workspace '{req.cafe_name}' created successfully",
+        "tenant_id":    tenant["tenant_id"],
+        "slug":         tenant["slug"],
+        "workspace_url": f"?workspace={tenant['slug']}",
+        "cafe_name":    tenant["cafe_name"],
+        "brand_color":  tenant["brand_color"],
+        "logo_url":     tenant["logo_url"],
+        "plan":         tenant["plan"],
+        "max_users":    tenant["max_users"],
+        "token":        token,
+        "username":     req.username,
+        "role":         "Admin",
+        "role_id":      "admin",
+        "permissions":  _rs.ALL_PERMISSIONS,
+    }
+
+
+@app.get("/api/auth/workspace/{slug}")
+def get_workspace_info(slug: str):
+    """
+    Return public workspace branding for the login page.
+    Called before authentication to pre-populate the login form.
+    """
+    import tenant_store as _ts
+    tenant = _ts.get_tenant_by_slug(slug)
+    if not tenant:
+        raise HTTPException(status_code=404,
+            detail=f"Workspace '{slug}' not found")
+    return {
+        "found":       True,
+        "slug":        tenant["slug"],
+        "cafe_name":   tenant["cafe_name"],
+        "brand_color": tenant["brand_color"],
+        "logo_url":    tenant["logo_url"],
+        "is_active":   tenant.get("is_active", True),
+    }
+
+
+@app.get("/api/tenant/info")
+def tenant_info(request: Request = None):
+    """
+    Return the calling tenant's branding, plan, and storage info.
+    Reads tenant_id from JWT Bearer token or falls back to system tenant.
+    """
+    import tenant_store as _ts
+    import auth_utils as _au
+
+    auth_header = request.headers.get("Authorization", "") if request else ""
+    tenant_id = _au.extract_tenant_id(auth_header) or _ts.SYSTEM_TENANT_ID
+
+    if tenant_id == _ts.SYSTEM_TENANT_ID:
+        return {
+            "tenant_id":        _ts.SYSTEM_TENANT_ID,
+            "cafe_name":        "Cafe Buddy AI",
+            "brand_color":      "#6366f1",
+            "logo_url":         "",
+            "plan":             "system",
+            "max_users":        999,
+            "storage_limit_mb": 999999,   # effectively unlimited; inf not JSON-safe
+            "storage_used_mb":  0,
+            "is_active":        True,
+        }
+
+    tenant = _ts.get_tenant(tenant_id)
+    if not tenant:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    return tenant
+
+
+@app.put("/api/tenant/branding")
+def update_tenant_branding(req: TenantBrandingRequest, request: Request = None):
+    """Update cafe name, brand colour, and/or logo URL for the current tenant."""
+    import tenant_store as _ts
+    import auth_utils as _au
+
+    auth_header = request.headers.get("Authorization", "") if request else ""
+    tenant_id = _au.extract_tenant_id(auth_header) or _ts.SYSTEM_TENANT_ID
+    username  = _au.extract_username(auth_header) or \
+                (request.headers.get("X-Username", "anonymous") if request else "anonymous")
+
+    if tenant_id == _ts.SYSTEM_TENANT_ID:
+        raise HTTPException(status_code=403,
+            detail="System workspace branding cannot be changed via API")
+
+    try:
+        updated = _ts.update_branding(tenant_id,
+            cafe_name=req.cafe_name, brand_color=req.brand_color, logo_url=req.logo_url)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+    ip = request.client.host if request and request.client else ""
+    _audit.log_action(username=username, module="system", action="BRANDING_UPDATE",
+        description=f"Updated branding for tenant '{tenant_id}'",
+        ip_address=ip)
+
+    return {"success": True, "tenant": updated}
+
 
 # ─────────────────────────────────────────────
 # ROLE MANAGEMENT API
@@ -937,6 +1138,20 @@ async def upload_excel(file: UploadFile = File(...), request: Request = None):
         raise HTTPException(status_code=400, detail="Only .xlsx or .xls files are supported.")
 
     raw = await file.read()
+
+    # ── Storage-limit check for new tenants ──────────────────────────────────
+    import tenant_store as _ts
+    import auth_utils as _au
+    auth_header = request.headers.get("Authorization", "") if request else ""
+    tenant_id   = _au.extract_tenant_id(auth_header) or _ts.SYSTEM_TENANT_ID
+    ok, used_mb, limit_mb = _ts.check_storage_limit(tenant_id, len(raw))
+    if not ok:
+        raise HTTPException(status_code=413,
+            detail=f"Storage limit exceeded. Used: {used_mb:.1f} MB / {limit_mb:.0f} MB. "
+                   f"This file is {len(raw)/1024/1024:.1f} MB. "
+                   "Upgrade your plan or delete existing data to free space.")
+    # ─────────────────────────────────────────────────────────────────────────
+
     username = request.headers.get("X-Username", "anonymous") if request else "anonymous"
     try:
         records, info = _parse_excel_bytes(raw)
@@ -961,6 +1176,10 @@ async def upload_excel(file: UploadFile = File(...), request: Request = None):
         description=f"Uploaded '{file.filename}' — {len(records)} records, {info.get('unique_dates', 0)} days, "
                     f"{info.get('unique_items', 0)} items",
         ip_address=(request.client.host if request and request.client else ""))
+
+    # Record storage usage for new tenants
+    _ts.record_upload(tenant_id, len(raw))
+
     return {"success": True, "message": f"Loaded {len(records)} records.", "info": _upload_info}
 
 

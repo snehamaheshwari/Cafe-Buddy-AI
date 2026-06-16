@@ -15,6 +15,10 @@ export default function Header({ title, subtitle }: Props) {
   const { toggle }       = useSidebar()
   const { user, logout } = useAuth()
 
+  // Tenant branding — brand color and café name from auth context
+  const brandColor = user?.brand_color || '#6366f1'
+  const cafeName   = user?.cafe_name   || 'Cafe Buddy AI'
+
   useEffect(() => {
     const t = setInterval(() => setTime(new Date()), 1000)
     return () => clearInterval(t)
@@ -69,12 +73,15 @@ export default function Header({ title, subtitle }: Props) {
 
         {/* User + sign-out */}
         <div className="flex items-center gap-2 pl-2 border-l border-slate-200">
-          <div className="w-8 h-8 rounded bg-brand-500 flex items-center justify-center text-white text-xs font-bold uppercase flex-shrink-0">
+          <div
+            className="w-8 h-8 rounded flex items-center justify-center text-white text-xs font-bold uppercase flex-shrink-0"
+            style={{ backgroundColor: brandColor }}
+          >
             {(user?.username || 'A').slice(0, 2)}
           </div>
           <div className="hidden sm:block">
             <div className="text-xs font-semibold text-slate-700 capitalize">{user?.full_name || user?.username || 'User'}</div>
-            <div className="text-xs text-slate-400">{user?.role || 'Viewer'}</div>
+            <div className="text-xs text-slate-400">{cafeName} · {user?.role || 'Viewer'}</div>
           </div>
           <button
             onClick={handleSignOut}

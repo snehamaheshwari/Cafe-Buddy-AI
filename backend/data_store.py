@@ -216,3 +216,126 @@ _loaded = load_dataset("menu")
 _menu_data, _menu_info = _loaded
 
 del _loaded  # clean up temp variable
+
+
+# ─── Per-tenant data storage ──────────────────────────────────────────────────
+#
+# For new tenants each dataset is stored under data/{tenant_id}/{name}.json
+# and kept in the _tenant_state in-memory cache below.
+# The system tenant (SYSTEM_TENANT_ID = "system") continues to use the
+# module-level globals above (no behaviour change for existing demo accounts).
+
+_tenant_state: dict[str, dict] = {}
+#  keyed by tenant_id → {
+#    "pos_data": list, "pos_info": dict,
+#    "financial_data": list, "financial_info": dict,
+#    "customer_data": list, "customer_info": dict,
+#    "review_data": list,  "review_info": dict,
+#    "menu_data": list,    "menu_info": dict,
+#    "decision_overrides": dict,
+#  }
+
+
+def _tenant_bucket(tenant_id: str) -> dict:
+    """Return (lazily-creating) the in-memory bucket for a tenant."""
+    if tenant_id not in _tenant_state:
+        _tenant_state[tenant_id] = {
+            "pos_data": [], "pos_info": {},
+            "financial_data": [], "financial_info": {},
+            "customer_data": [], "customer_info": {},
+            "review_data": [],  "review_info": {},
+            "menu_data": [],    "menu_info": {},
+            "decision_overrides": {},
+        }
+    return _tenant_state[tenant_id]
+
+
+def save_dataset_for_tenant(tenant_id: str, name: str,
+                             data: list, info: dict) -> None:
+    """Persist a dataset scoped to a tenant."""
+    from tenant_store import SYSTEM_TENANT_ID, get_tenant_data_dir
+    if tenant_id == SYSTEM_TENANT_ID:
+        save_dataset(name, data, info)
+        return
+    tenant_dir = get_tenant_data_dir(tenant_id)
+    path = os.path.join(tenant_dir, f"{name}.json")
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"data": data, "info": info}, f, ensure_ascii=False)
+    except Exception:
+        pass
+    # Update in-memory cache
+    bucket = _tenant_bucket(tenant_id)
+    bucket[f"{name}_data"] = data
+    bucket[f"{name}_info"] = info
+    if name == "pos":
+        bucket["pos_data"] = data
+        bucket["pos_info"] = info
+
+
+def load_dataset_for_tenant(tenant_id: str, name: str) -> tuple[list, dict]:
+    """Load a persisted dataset for a tenant. Returns ([], {}) if missing."""
+    from tenant_store import SYSTEM_TENANT_ID, get_tenant_data_dir
+    if tenant_id == SYSTEM_TENANT_ID:
+        return load_dataset(name)
+    bucket = _tenant_bucket(tenant_id)
+    cached = bucket.get(f"{name}_data")
+    if cached:
+        return cached, bucket.get(f"{name}_info", {})
+    tenant_dir = get_tenant_data_dir(tenant_id)
+    path = os.path.join(tenant_dir, f"{name}.json")
+    if not os.path.exists(path):
+        return [], {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            obj = json.load(f)
+        data = obj.get("data", [])
+        info = obj.get("info", {})
+        bucket[f"{name}_data"] = data
+        bucket[f"{name}_info"] = info
+        return data, info
+    except Exception:
+        return [], {}
+
+
+def get_pos_data_for_tenant(tenant_id: str) -> list:
+    """Return POS data for any tenant (system or new)."""
+    from tenant_store import SYSTEM_TENANT_ID
+    if tenant_id == SYSTEM_TENANT_ID:
+        return get_data()
+    data, _ = load_dataset_for_tenant(tenant_id, "pos")
+    return data
+
+
+def get_data_for_tenant(tenant_id: str) -> list:
+    """Alias for get_pos_data_for_tenant — preferred in endpoint code."""
+    return get_pos_data_for_tenant(tenant_id)
+
+
+def clear_tenant_data(tenant_id: str) -> None:
+    """
+    Remove all datasets for a tenant from disk and memory.
+    Called when a tenant resets their data or deactivates.
+    Does NOT affect the system tenant.
+    """
+    from tenant_store import SYSTEM_TENANT_ID, get_tenant_data_dir
+    if tenant_id == SYSTEM_TENANT_ID:
+        return
+    if tenant_id in _tenant_state:
+        del _tenant_state[tenant_id]
+    tenant_dir = get_tenant_data_dir(tenant_id)
+    for fname in ["pos", "financial", "customer", "reviews_meta", "menu"]:
+        path = os.path.join(tenant_dir, f"{fname}.json")
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            pass
+
+
+def get_decision_overrides_for_tenant(tenant_id: str) -> dict:
+    """Return the decision-overrides dict for a tenant."""
+    from tenant_store import SYSTEM_TENANT_ID
+    if tenant_id == SYSTEM_TENANT_ID:
+        return _decision_overrides
+    return _tenant_bucket(tenant_id)["decision_overrides"]
