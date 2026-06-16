@@ -12,7 +12,7 @@ import os
 from collections import defaultdict
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -1029,19 +1029,23 @@ class ChatRequest(BaseModel):
 # ─── Endpoint ─────────────────────────────────────────────────────────────────
 
 @router.post("/chatbot/stream")
-async def chatbot_stream(req: ChatRequest):
-    data       = get_data()
+async def chatbot_stream(req: ChatRequest, request: Request = None):
+    import auth_utils as _au, tenant_store as _ts
+    _auth_header = request.headers.get("Authorization", "") if request else ""
+    _tid = _au.extract_tenant_id(_auth_header) or _ts.SYSTEM_TENANT_ID
+    data       = _ds.get_data_for_tenant(_tid)
     context    = _build_context(data)
     festivals  = get_upcoming_festivals(90)
     msg_lower  = req.message.lower()
 
     # Step 1: Build ML model reasoning context (non-blocking, timeout-protected)
     ml_context = ""
-    if _ds._pos_data:
+    _pos_data_tenant, _ = _ds.get_pos_for_tenant(_tid)
+    if _pos_data_tenant:
         try:
             import ml_models
             ml_context = await asyncio.wait_for(
-                asyncio.to_thread(ml_models.build_ml_context, _ds._pos_data),
+                asyncio.to_thread(ml_models.build_ml_context, _pos_data_tenant),
                 timeout=10.0
             )
         except Exception:
@@ -1118,20 +1122,24 @@ async def chatbot_stream(req: ChatRequest):
 # ─── Non-streaming fallback (works through Cloudflare / any proxy) ────────────
 
 @router.post("/chatbot/ask")
-async def chatbot_ask(req: ChatRequest):
+async def chatbot_ask(req: ChatRequest, request: Request = None):
     """Identical logic to /chatbot/stream but returns a single JSON object.
     Used by the frontend when SSE is blocked by a tunnel or proxy."""
-    data      = get_data()
+    import auth_utils as _au, tenant_store as _ts
+    _auth_header = request.headers.get("Authorization", "") if request else ""
+    _tid = _au.extract_tenant_id(_auth_header) or _ts.SYSTEM_TENANT_ID
+    data      = _ds.get_data_for_tenant(_tid)
     context   = _build_context(data)
     festivals = get_upcoming_festivals(90)
     msg_lower = req.message.lower()
 
     ml_context = ""
-    if _ds._pos_data:
+    _pos_data_tenant, _ = _ds.get_pos_for_tenant(_tid)
+    if _pos_data_tenant:
         try:
             import ml_models
             ml_context = await asyncio.wait_for(
-                asyncio.to_thread(ml_models.build_ml_context, _ds._pos_data),
+                asyncio.to_thread(ml_models.build_ml_context, _pos_data_tenant),
                 timeout=10.0
             )
         except Exception:

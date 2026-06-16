@@ -339,3 +339,229 @@ def get_decision_overrides_for_tenant(tenant_id: str) -> dict:
     if tenant_id == SYSTEM_TENANT_ID:
         return _decision_overrides
     return _tenant_bucket(tenant_id)["decision_overrides"]
+
+
+# ─── Additional per-tenant typed accessors & mutators ─────────────────────────
+# These functions centralise every read/write of the five dataset types so that
+# new-tenant endpoints never touch the system-tenant module-level globals.
+
+def get_financial_for_tenant(tenant_id: str) -> tuple:
+    """Return (financial_data, financial_info) for any tenant."""
+    from tenant_store import SYSTEM_TENANT_ID
+    if tenant_id == SYSTEM_TENANT_ID:
+        return _financial_data, _financial_info
+    return load_dataset_for_tenant(tenant_id, "financial")
+
+
+def get_customer_for_tenant(tenant_id: str) -> tuple:
+    """Return (customer_data, customer_info) for any tenant."""
+    from tenant_store import SYSTEM_TENANT_ID
+    if tenant_id == SYSTEM_TENANT_ID:
+        return _customer_data, _customer_info
+    return load_dataset_for_tenant(tenant_id, "customer")
+
+
+def get_menu_for_tenant(tenant_id: str) -> tuple:
+    """Return (menu_data, menu_info) for any tenant."""
+    from tenant_store import SYSTEM_TENANT_ID
+    if tenant_id == SYSTEM_TENANT_ID:
+        return _menu_data, _menu_info
+    return load_dataset_for_tenant(tenant_id, "menu")
+
+
+def get_pos_for_tenant(tenant_id: str) -> tuple:
+    """Return (pos_data, pos_info) for any tenant."""
+    from tenant_store import SYSTEM_TENANT_ID
+    if tenant_id == SYSTEM_TENANT_ID:
+        return _pos_data, _pos_info
+    return load_dataset_for_tenant(tenant_id, "pos")
+
+
+def get_uploaded_for_tenant(tenant_id: str) -> tuple:
+    """Return (uploaded_data, upload_info) for the legacy single-file upload."""
+    from tenant_store import SYSTEM_TENANT_ID
+    if tenant_id == SYSTEM_TENANT_ID:
+        return _uploaded_data, _upload_info
+    bucket = _tenant_bucket(tenant_id)
+    return bucket.get("uploaded_data", []), bucket.get("upload_info", {})
+
+
+def set_pos_for_tenant(tenant_id: str, records: list, info: dict) -> None:
+    """Persist POS data for a tenant (memory + disk)."""
+    global _pos_data, _pos_info, _uploaded_data, _upload_info
+    from tenant_store import SYSTEM_TENANT_ID
+    if tenant_id == SYSTEM_TENANT_ID:
+        _pos_data = records
+        _pos_info = info
+        _uploaded_data = records
+        _upload_info = info
+        save_dataset("pos", records, info)
+        return
+    bucket = _tenant_bucket(tenant_id)
+    bucket["pos_data"] = records
+    bucket["pos_info"] = info
+    bucket["uploaded_data"] = records
+    bucket["upload_info"] = info
+    save_dataset_for_tenant(tenant_id, "pos", records, info)
+
+
+def set_financial_for_tenant(tenant_id: str, records: list, info: dict) -> None:
+    """Persist financial data for a tenant (memory + disk)."""
+    global _financial_data, _financial_info
+    from tenant_store import SYSTEM_TENANT_ID
+    if tenant_id == SYSTEM_TENANT_ID:
+        _financial_data = records
+        _financial_info = info
+        save_dataset("financial", records, info)
+        return
+    bucket = _tenant_bucket(tenant_id)
+    bucket["financial_data"] = records
+    bucket["financial_info"] = info
+    save_dataset_for_tenant(tenant_id, "financial", records, info)
+
+
+def set_customer_for_tenant(tenant_id: str, records: list, info: dict) -> None:
+    """Persist customer data for a tenant (memory + disk)."""
+    global _customer_data, _customer_info
+    from tenant_store import SYSTEM_TENANT_ID
+    if tenant_id == SYSTEM_TENANT_ID:
+        _customer_data = records
+        _customer_info = info
+        save_dataset("customer", records, info)
+        return
+    bucket = _tenant_bucket(tenant_id)
+    bucket["customer_data"] = records
+    bucket["customer_info"] = info
+    save_dataset_for_tenant(tenant_id, "customer", records, info)
+
+
+def set_menu_for_tenant(tenant_id: str, records: list, info: dict) -> None:
+    """Persist menu data for a tenant (memory + disk)."""
+    global _menu_data, _menu_info
+    from tenant_store import SYSTEM_TENANT_ID
+    if tenant_id == SYSTEM_TENANT_ID:
+        _menu_data = records
+        _menu_info = info
+        save_dataset("menu", records, info)
+        return
+    bucket = _tenant_bucket(tenant_id)
+    bucket["menu_data"] = records
+    bucket["menu_info"] = info
+    save_dataset_for_tenant(tenant_id, "menu", records, info)
+
+
+def set_uploaded_for_tenant(tenant_id: str, records: list, info: dict) -> None:
+    """Store legacy single-file upload data in memory for a tenant."""
+    global _uploaded_data, _upload_info
+    from tenant_store import SYSTEM_TENANT_ID
+    if tenant_id == SYSTEM_TENANT_ID:
+        _uploaded_data = records
+        _upload_info = info
+        return
+    bucket = _tenant_bucket(tenant_id)
+    bucket["uploaded_data"] = records
+    bucket["upload_info"] = info
+
+
+def set_decision_override_for_tenant(tenant_id: str, decision_id: int,
+                                      status: str) -> None:
+    """Record approve/reject for a single decision, scoped to the tenant."""
+    from tenant_store import SYSTEM_TENANT_ID
+    if tenant_id == SYSTEM_TENANT_ID:
+        _decision_overrides[decision_id] = status
+    else:
+        _tenant_bucket(tenant_id)["decision_overrides"][decision_id] = status
+
+
+def clear_overrides_for_tenant(tenant_id: str) -> None:
+    """Reset all decision overrides for a tenant."""
+    from tenant_store import SYSTEM_TENANT_ID
+    if tenant_id == SYSTEM_TENANT_ID:
+        _decision_overrides.clear()
+    else:
+        _tenant_bucket(tenant_id)["decision_overrides"].clear()
+
+
+def clear_pos_for_tenant(tenant_id: str) -> None:
+    """Clear POS data for a tenant (memory + disk)."""
+    global _pos_data, _pos_info, _uploaded_data, _upload_info
+    from tenant_store import SYSTEM_TENANT_ID
+    if tenant_id == SYSTEM_TENANT_ID:
+        _pos_data = []
+        _pos_info = {}
+        _uploaded_data = []
+        _upload_info = {}
+        clear_dataset("pos")
+        return
+    bucket = _tenant_bucket(tenant_id)
+    bucket["pos_data"] = []
+    bucket["pos_info"] = {}
+    bucket["uploaded_data"] = []
+    bucket["upload_info"] = {}
+    save_dataset_for_tenant(tenant_id, "pos", [], {})
+
+
+def clear_financial_for_tenant(tenant_id: str) -> None:
+    """Clear financial data for a tenant (memory + disk)."""
+    global _financial_data, _financial_info
+    from tenant_store import SYSTEM_TENANT_ID
+    if tenant_id == SYSTEM_TENANT_ID:
+        _financial_data = []
+        _financial_info = {}
+        clear_dataset("financial")
+        return
+    bucket = _tenant_bucket(tenant_id)
+    bucket["financial_data"] = []
+    bucket["financial_info"] = {}
+    save_dataset_for_tenant(tenant_id, "financial", [], {})
+
+
+def clear_customer_for_tenant(tenant_id: str) -> None:
+    """Clear customer data for a tenant (memory + disk)."""
+    global _customer_data, _customer_info
+    from tenant_store import SYSTEM_TENANT_ID
+    if tenant_id == SYSTEM_TENANT_ID:
+        _customer_data = []
+        _customer_info = {}
+        clear_dataset("customer")
+        return
+    bucket = _tenant_bucket(tenant_id)
+    bucket["customer_data"] = []
+    bucket["customer_info"] = {}
+    save_dataset_for_tenant(tenant_id, "customer", [], {})
+
+
+def clear_menu_for_tenant(tenant_id: str) -> None:
+    """Clear menu data for a tenant (memory + disk)."""
+    global _menu_data, _menu_info
+    from tenant_store import SYSTEM_TENANT_ID
+    if tenant_id == SYSTEM_TENANT_ID:
+        _menu_data = []
+        _menu_info = {}
+        clear_dataset("menu")
+        return
+    bucket = _tenant_bucket(tenant_id)
+    bucket["menu_data"] = []
+    bucket["menu_info"] = {}
+    save_dataset_for_tenant(tenant_id, "menu", [], {})
+
+
+def clear_all_for_tenant(tenant_id: str) -> None:
+    """Clear ALL uploaded data + decision overrides for a tenant (used by /upload/clear)."""
+    global _uploaded_data, _upload_info
+    from tenant_store import SYSTEM_TENANT_ID
+    if tenant_id == SYSTEM_TENANT_ID:
+        _uploaded_data = []
+        _upload_info = {}
+        _decision_overrides.clear()
+        return
+    if tenant_id in _tenant_state:
+        _tenant_state[tenant_id] = {
+            "pos_data": [], "pos_info": {},
+            "financial_data": [], "financial_info": {},
+            "customer_data": [], "customer_info": {},
+            "review_data": [],  "review_info": {},
+            "menu_data": [],    "menu_info": {},
+            "decision_overrides": {},
+            "uploaded_data": [], "upload_info": {},
+        }
