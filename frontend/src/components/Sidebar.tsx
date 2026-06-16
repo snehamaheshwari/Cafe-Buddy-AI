@@ -3,7 +3,7 @@ import { useEffect } from 'react'
 import {
   LayoutDashboard, Database, BarChart2, TrendingUp,
   Lightbulb, Rocket, MessageCircle, Coffee, ChevronRight,
-  X, Bell, Target, Settings, LogOut, Shield,
+  X, Bell, Target, Settings, LogOut, Shield, Building2,
 } from 'lucide-react'
 import { useSidebar } from '../context/SidebarContext'
 import { useAuth } from '../context/AuthContext'
@@ -221,6 +221,38 @@ export default function Sidebar() {
                             <div className={`text-xs leading-tight truncate mt-0.5 ${
                               isActive ? 'text-slate-400' : 'text-slate-600 group-hover:text-slate-500'
                             }`}>Branding &amp; plan</div>
+                          </div>
+                          {isActive && <ChevronRight size={13} className="text-brand-400 flex-shrink-0" />}
+                        </>
+                      )}
+                    </NavLink>
+                  </li>
+                )}
+
+                {/* Workspace Admin — only visible to system tenant users */}
+                {(user?.tenant_id === 'system' || !user?.tenant_id) && (
+                  <li>
+                    <NavLink
+                      to="/workspace-admin"
+                      className={({ isActive }) =>
+                        `flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all group ${
+                          isActive
+                            ? 'bg-slate-800 text-white shadow-sm'
+                            : 'text-slate-400 hover:bg-slate-800/70 hover:text-slate-200'
+                        }`
+                      }
+                    >
+                      {({ isActive }) => (
+                        <>
+                          <Building2
+                            size={16}
+                            className={`flex-shrink-0 ${isActive ? 'text-brand-400' : 'text-slate-500 group-hover:text-slate-300'}`}
+                          />
+                          <div className="flex-1 min-w-0">
+                            <div className="font-medium leading-tight truncate">Workspace Admin</div>
+                            <div className={`text-xs leading-tight truncate mt-0.5 ${
+                              isActive ? 'text-slate-400' : 'text-slate-600 group-hover:text-slate-500'
+                            }`}>Manage all workspaces</div>
                           </div>
                           {isActive && <ChevronRight size={13} className="text-brand-400 flex-shrink-0" />}
                         </>

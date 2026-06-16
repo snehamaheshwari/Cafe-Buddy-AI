@@ -78,12 +78,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const stored = loadUser()
     if (!stored) return   // not logged in — nothing to refresh
 
-    fetch('/api/auth/me', {
-      headers: {
-        'X-Username': stored.username,
-        'X-Role':     stored.role_id,
-      },
-    })
+    // Include JWT so the backend can resolve the correct tenant role store
+    const meHeaders: Record<string, string> = {
+      'X-Username': stored.username,
+      'X-Role':     stored.role_id,
+    }
+    if (stored.token && !stored.token.startsWith('demo-token-')) {
+      meHeaders['Authorization'] = `Bearer ${stored.token}`
+    }
+
+    fetch('/api/auth/me', { headers: meHeaders })
       .then(r => r.ok ? r.json() : null)
       .then(data => {
         if (!data) return

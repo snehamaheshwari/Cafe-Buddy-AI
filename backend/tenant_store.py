@@ -230,6 +230,27 @@ def record_upload(tenant_id: str, file_bytes: int) -> None:
 
 # ─── User-count helpers ───────────────────────────────────────────────────────
 
+def delete_tenant(tenant_id: str) -> None:
+    """
+    Permanently delete a tenant workspace.
+
+    Removes the tenant record from tenants.json and wipes their data directory.
+    Raises ValueError for the system tenant, KeyError if tenant_id is unknown.
+    """
+    import shutil
+    if tenant_id == SYSTEM_TENANT_ID:
+        raise ValueError("Cannot delete the system workspace")
+    data = _load()
+    if tenant_id not in data["tenants"]:
+        raise KeyError(f"Workspace '{tenant_id}' not found")
+    del data["tenants"][tenant_id]
+    _save(data)
+    # Remove tenant data directory (roles.json + uploaded datasets)
+    tenant_dir = os.path.join(_DATA_DIR, tenant_id)
+    if os.path.exists(tenant_dir):
+        shutil.rmtree(tenant_dir, ignore_errors=True)
+
+
 def get_max_users(tenant_id: str) -> int:
     if tenant_id == SYSTEM_TENANT_ID:
         return 999   # no limit for demo

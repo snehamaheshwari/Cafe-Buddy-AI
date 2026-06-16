@@ -7,6 +7,7 @@ import {
 } from 'lucide-react'
 import Header from '../components/Header'
 import { useAuth } from '../context/AuthContext'
+import { authHeaders } from '../lib/api'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface Role {
@@ -416,8 +417,8 @@ export default function RoleManagement() {
     setError('')
     try {
       const [rRes, uRes] = await Promise.all([
-        fetch('/api/roles'),
-        fetch('/api/users'),
+        fetch('/api/roles',  { headers: authHeaders() }),
+        fetch('/api/users',  { headers: authHeaders() }),
       ])
       if (!rRes.ok || !uRes.ok) throw new Error('Failed to load data')
       const rData = await rRes.json()
@@ -446,7 +447,7 @@ export default function RoleManagement() {
     const body   = isEdit
       ? { name: data.name, description: data.description, permissions: data.permissions }
       : data
-    const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+    const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(body) })
     const json = await res.json()
     if (!res.ok) { showToast(`Error: ${json.detail}`); return }
     showToast(isEdit ? `Role "${data.name}" updated` : `Role "${data.name}" created`)
@@ -456,7 +457,7 @@ export default function RoleManagement() {
   }
 
   const handleRoleDelete = async (roleId: string) => {
-    const res = await fetch(`/api/roles/${roleId}`, { method: 'DELETE' })
+    const res = await fetch(`/api/roles/${roleId}`, { method: 'DELETE', headers: authHeaders() })
     const json = await res.json()
     if (!res.ok) { showToast(`Error: ${json.detail}`); return }
     showToast('Role deleted')
@@ -474,7 +475,7 @@ export default function RoleManagement() {
       ? { role_id: data.role_id, full_name: data.full_name, email: data.email,
           ...(data.password ? { password: data.password } : {}) }
       : data
-    const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+    const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json', ...authHeaders() }, body: JSON.stringify(body) })
     const json = await res.json()
     if (!res.ok) { showToast(`Error: ${json.detail}`); return }
     showToast(isEdit ? `Member "${data.username}" updated` : `Member "${data.username}" added`)
@@ -486,7 +487,7 @@ export default function RoleManagement() {
   const handleToggleActive = async (username: string, isActive: boolean) => {
     const res = await fetch(`/api/users/${username}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ is_active: isActive }),
     })
     if (!res.ok) { showToast('Error updating status'); return }
@@ -495,7 +496,7 @@ export default function RoleManagement() {
   }
 
   const handleMemberDelete = async (username: string) => {
-    const res = await fetch(`/api/users/${username}`, { method: 'DELETE' })
+    const res = await fetch(`/api/users/${username}`, { method: 'DELETE', headers: authHeaders() })
     const json = await res.json()
     if (!res.ok) { showToast(`Error: ${json.detail}`); return }
     showToast(`Member "${username}" removed`)

@@ -13,6 +13,7 @@ import PeerComparison from './pages/PeerComparison'
 import RoleManagement from './pages/RoleManagement'
 import AuditLog from './pages/AuditLog'
 import TenantSettings from './pages/TenantSettings'
+import WorkspaceAdmin from './pages/WorkspaceAdmin'
 import { SidebarProvider } from './context/SidebarContext'
 import { AuthProvider, useAuth } from './context/AuthContext'
 
@@ -171,6 +172,12 @@ export default function App() {
               <PermissionRoute feature="role_management">
                 <TenantSettings />
               </PermissionRoute>
+            </PrivateLayout>
+          } />
+
+          <Route path="/workspace-admin" element={
+            <PrivateLayout>
+              <WorkspaceAdmin />
             </PrivateLayout>
           } />
 

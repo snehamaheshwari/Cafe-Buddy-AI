@@ -6,8 +6,11 @@ const BASE = '/api'
  * - System tenant demo accounts also send the JWT (now a real token)
  * - Legacy header `X-Username` is included for backward compatibility with
  *   audit middleware that reads it directly.
+ *
+ * Exported so other components (e.g. RoleManagement) can include the same
+ * auth context in their own fetch calls.
  */
-function authHeaders(): Record<string, string> {
+export function authHeaders(): Record<string, string> {
   try {
     const raw = localStorage.getItem('cafe_buddy_auth')
     if (!raw) return {}
@@ -123,14 +126,14 @@ export const api = {
     summaryMenu:      () => get('/data/menu/summary'),
     menu: (file: File) => {
       const fd = new FormData(); fd.append('file', file)
-      return fetch(`${BASE}/upload/menu`, { method: 'POST', body: fd }).then(async (r) => {
+      return fetch(`${BASE}/upload/menu`, { method: 'POST', headers: authHeaders(), body: fd }).then(async (r) => {
         if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || 'Upload failed') }
         return r.json()
       })
     },
     reviews: (file: File) => {
       const fd = new FormData(); fd.append('file', file)
-      return fetch(`${BASE}/upload/reviews`, { method: 'POST', body: fd }).then(async (r) => {
+      return fetch(`${BASE}/upload/reviews`, { method: 'POST', headers: authHeaders(), body: fd }).then(async (r) => {
         if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || 'Upload failed') }
         return r.json()
       })
@@ -193,6 +196,12 @@ export const api = {
       a.click()
       document.body.removeChild(a)
     },
+  },
+  admin: {
+    /** List all registered tenant workspaces (system admin only). */
+    listTenants:  () => get<any>('/admin/tenants'),
+    /** Permanently delete a tenant workspace (system admin only). */
+    deleteTenant: (tenantId: string) => del<any>(`/admin/tenants/${tenantId}`),
   },
   peers: {
     cities:      ()                             => get<any>('/peers/cities'),

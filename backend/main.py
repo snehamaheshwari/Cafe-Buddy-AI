@@ -717,17 +717,25 @@ def me(request: Request = None):
     """
     Return the current user's up-to-date role and permissions.
     The frontend calls this on app startup to refresh stale localStorage data.
-    Username is read from the X-Username header (set by apiFetch / the frontend).
+
+    Username is read from X-Username header; tenant_id is extracted from the
+    JWT Bearer token so both system and tenant users are correctly resolved.
     """
+    from role_store import get_tenant_store
     username = request.headers.get("X-Username", "") if request else ""
     if not username:
-        from fastapi import HTTPException
         raise HTTPException(status_code=401, detail="Not authenticated")
-    user_info = _rs.get_user(username)
+
+    # Route to the correct store: JWT tenant (new workspace) → TenantRoleStore
+    # No JWT / "system" JWT → SystemTenantAdapter (legacy demo users)
+    tid   = _req_tenant_id(request)
+    store = get_tenant_store(tid)
+
+    user_info = store.get_user(username)
     if not user_info:
-        from fastapi import HTTPException
         raise HTTPException(status_code=404, detail="User not found")
-    role = _rs.get_role(user_info.get("role_id", "viewer")) or {}
+
+    role = store.get_role(user_info.get("role_id", "viewer")) or {}
     return {
         "username":    username,
         "full_name":   user_info.get("full_name", username),
@@ -1036,9 +1044,12 @@ class RoleUpdateRequest(BaseModel):
     permissions: Optional[list[str]] = None
 
 @app.get("/api/roles")
-def get_roles():
+def get_roles(request: Request = None):
+    from role_store import get_tenant_store
+    tid   = _req_tenant_id(request)
+    store = get_tenant_store(tid)
     return {
-        "roles": _rs.list_roles(),
+        "roles": store.list_roles(),
         "all_permissions": _rs.ALL_PERMISSIONS,
         "permission_labels": _rs.PERMISSION_LABELS,
     }
@@ -1046,7 +1057,9 @@ def get_roles():
 @app.post("/api/roles")
 def create_role(req: RoleCreateRequest, request: Request = None):
     try:
-        role = _rs.create_role(req.id, req.name, req.description, req.permissions)
+        from role_store import get_tenant_store
+        store = get_tenant_store(_req_tenant_id(request))
+        role  = store.create_role(req.id, req.name, req.description, req.permissions)
         username = request.headers.get("X-Username", "admin") if request else "admin"
         _audit.log_action(username=username, module="role_management", action="ROLE_CREATE",
             description=f"Created role '{req.name}' (id={req.id}) with {len(req.permissions)} permissions",
@@ -1058,8 +1071,10 @@ def create_role(req: RoleCreateRequest, request: Request = None):
 @app.put("/api/roles/{role_id}")
 def update_role(role_id: str, req: RoleUpdateRequest, request: Request = None):
     try:
-        role = _rs.update_role(role_id, name=req.name,
-                               description=req.description, permissions=req.permissions)
+        from role_store import get_tenant_store
+        store = get_tenant_store(_req_tenant_id(request))
+        role  = store.update_role(role_id, name=req.name,
+                                  description=req.description, permissions=req.permissions)
         username = request.headers.get("X-Username", "admin") if request else "admin"
         _audit.log_action(username=username, module="role_management", action="ROLE_UPDATE",
             description=f"Updated role '{role_id}': name={req.name}, perms={req.permissions}",
@@ -1073,7 +1088,8 @@ def update_role(role_id: str, req: RoleUpdateRequest, request: Request = None):
 @app.delete("/api/roles/{role_id}")
 def delete_role(role_id: str, request: Request = None):
     try:
-        _rs.delete_role(role_id)
+        from role_store import get_tenant_store
+        get_tenant_store(_req_tenant_id(request)).delete_role(role_id)
         username = request.headers.get("X-Username", "admin") if request else "admin"
         _audit.log_action(username=username, module="role_management", action="ROLE_DELETE",
             description=f"Deleted role '{role_id}'",
@@ -1103,14 +1119,18 @@ class UserUpdateRequest(BaseModel):
     password: Optional[str] = None
 
 @app.get("/api/users")
-def get_users():
-    return {"users": _rs.list_users()}
+def get_users(request: Request = None):
+    from role_store import get_tenant_store
+    store = get_tenant_store(_req_tenant_id(request))
+    return {"users": store.list_users()}
 
 @app.post("/api/users")
 def create_user(req: UserCreateRequest, request: Request = None):
     try:
-        user = _rs.create_user(req.username, req.password, req.role_id,
-                               req.full_name, req.email)
+        from role_store import get_tenant_store
+        store = get_tenant_store(_req_tenant_id(request))
+        user  = store.create_user(req.username, req.password, req.role_id,
+                                  req.full_name, req.email)
         actor = request.headers.get("X-Username", "admin") if request else "admin"
         _audit.log_action(username=actor, module="role_management", action="USER_CREATE",
             description=f"Created user '{req.username}' with role '{req.role_id}'",
@@ -1122,9 +1142,11 @@ def create_user(req: UserCreateRequest, request: Request = None):
 @app.put("/api/users/{username}")
 def update_user(username: str, req: UserUpdateRequest, request: Request = None):
     try:
-        user = _rs.update_user(username, role_id=req.role_id, full_name=req.full_name,
-                               email=req.email, is_active=req.is_active,
-                               password=req.password)
+        from role_store import get_tenant_store
+        store = get_tenant_store(_req_tenant_id(request))
+        user  = store.update_user(username, role_id=req.role_id, full_name=req.full_name,
+                                  email=req.email, is_active=req.is_active,
+                                  password=req.password)
         actor = request.headers.get("X-Username", "admin") if request else "admin"
         changes = []
         if req.role_id: changes.append(f"role→{req.role_id}")
@@ -1142,7 +1164,8 @@ def update_user(username: str, req: UserUpdateRequest, request: Request = None):
 @app.delete("/api/users/{username}")
 def delete_user(username: str, request: Request = None):
     try:
-        _rs.delete_user(username)
+        from role_store import get_tenant_store
+        get_tenant_store(_req_tenant_id(request)).delete_user(username)
         actor = request.headers.get("X-Username", "admin") if request else "admin"
         _audit.log_action(username=actor, module="role_management", action="USER_DELETE",
             description=f"Deleted user '{username}'",
@@ -1152,6 +1175,60 @@ def delete_user(username: str, request: Request = None):
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+# ─────────────────────────────────────────────
+# SYSTEM ADMIN — WORKSPACE MANAGEMENT
+# ─────────────────────────────────────────────
+
+@app.get("/api/admin/tenants")
+def admin_list_tenants(request: Request = None):
+    """
+    List all registered tenant workspaces.
+    Only accessible to the system admin (tenant_id == 'system').
+    """
+    import tenant_store as _ts
+    caller_tid = _req_tenant_id(request)
+    if caller_tid != _ts.SYSTEM_TENANT_ID:
+        raise HTTPException(status_code=403,
+            detail="System admin access required to list workspaces")
+    return {"tenants": _ts.list_tenants()}
+
+
+@app.delete("/api/admin/tenants/{tenant_id}")
+def admin_delete_tenant(tenant_id: str, request: Request = None):
+    """
+    Delete a tenant workspace and all its data.
+    Only accessible to the system admin.
+    Deletes: tenant registry entry, data directory, in-memory state.
+    """
+    import tenant_store as _ts
+    import role_store as _role_store
+
+    caller_tid = _req_tenant_id(request)
+    if caller_tid != _ts.SYSTEM_TENANT_ID:
+        raise HTTPException(status_code=403,
+            detail="System admin access required to delete workspaces")
+
+    try:
+        _ts.delete_tenant(tenant_id)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Clear in-memory data for this tenant
+    data_store.clear_all_for_tenant(tenant_id)
+
+    # Clear cached TenantRoleStore for this tenant
+    if tenant_id in _role_store._tenant_stores:
+        del _role_store._tenant_stores[tenant_id]
+
+    actor = request.headers.get("X-Username", "admin") if request else "admin"
+    _audit.log_action(username=actor, module="system", action="TENANT_DELETE",
+        description=f"Deleted tenant workspace '{tenant_id}'",
+        ip_address=(request.client.host if request and request.client else ""))
+    return {"success": True, "message": f"Workspace '{tenant_id}' has been deleted"}
 
 # ─────────────────────────────────────────────
 # EXCEL UPLOAD
