@@ -13,11 +13,21 @@ from datetime import datetime
 from typing import Optional
 
 import pandas as pd
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 
 import data_store
 
 router = APIRouter()
+
+
+def _get_tenant_id(request: Optional[Request]) -> str:
+    """Extract tenant_id from JWT Bearer token; fall back to system tenant."""
+    import auth_utils as _au
+    import tenant_store as _ts
+    if not request:
+        return _ts.SYSTEM_TENANT_ID
+    auth_header = request.headers.get("Authorization", "")
+    return _au.extract_tenant_id(auth_header) or _ts.SYSTEM_TENANT_ID
 
 # ─────────────────────────────────────────────
 # SHARED COLUMN-DETECTION UTILITY
@@ -632,7 +642,7 @@ def _check_ext(filename: str):
 # ── Financial ──────────────────────────────────────────────────────────────────
 
 @router.post("/upload/financial")
-async def upload_financial(file: UploadFile = File(...)):
+async def upload_financial(file: UploadFile = File(...), request: Request = None):
     _check_ext(file.filename)
     raw = await file.read()
     try:
@@ -646,24 +656,22 @@ async def upload_financial(file: UploadFile = File(...)):
     if not records:
         raise HTTPException(status_code=422, detail="No valid rows found.")
 
-    data_store._financial_data = records
-    data_store._financial_info = info
-    data_store.save_dataset("financial", records, info)
+    tid = _get_tenant_id(request)
+    data_store.set_financial_for_tenant(tid, records, info)
     return {"success": True, "message": f"Loaded {len(records)} financial records.", "info": info}
 
 
 @router.delete("/upload/financial/clear")
-def clear_financial():
-    data_store._financial_data = []
-    data_store._financial_info = {}
-    data_store.clear_dataset("financial")
+def clear_financial(request: Request = None):
+    tid = _get_tenant_id(request)
+    data_store.clear_financial_for_tenant(tid)
     return {"success": True}
 
 
 @router.get("/data/financial/summary")
-def financial_summary():
-    data = data_store._financial_data
-    info = data_store._financial_info
+def financial_summary(request: Request = None):
+    tid = _get_tenant_id(request)
+    data, info = data_store.get_financial_for_tenant(tid)
     if not data:
         return {"uploaded": False, "info": {}, "summary": {}}
 
@@ -710,7 +718,8 @@ def financial_summary():
 # ── POS Billing ────────────────────────────────────────────────────────────────
 
 @router.post("/upload/pos")
-async def upload_pos(file: UploadFile = File(...), mode: str = Query("replace")):
+async def upload_pos(file: UploadFile = File(...), mode: str = Query("replace"),
+                     request: Request = None):
     _check_ext(file.filename)
     raw = await file.read()
     try:
@@ -724,24 +733,25 @@ async def upload_pos(file: UploadFile = File(...), mode: str = Query("replace"))
     if not records:
         raise HTTPException(status_code=422, detail="No valid rows found.")
 
-    if mode == "append" and data_store._pos_data:
-        existing_ids = {r["order_id"] for r in data_store._pos_data if r.get("order_id")}
-        new_recs = [r for r in records if not r.get("order_id") or r["order_id"] not in existing_ids]
-        duplicates = len(records) - len(new_recs)
-        merged = data_store._pos_data + new_recs
-        info["mode"] = "append"
-        info["new_records"] = len(new_recs)
-        info["duplicates_skipped"] = duplicates
-        info["rows"] = len(merged)
-        records = merged
+    tid = _get_tenant_id(request)
+    if mode == "append":
+        existing, _ = data_store.get_pos_for_tenant(tid)
+        if existing:
+            existing_ids = {r["order_id"] for r in existing if r.get("order_id")}
+            new_recs = [r for r in records if not r.get("order_id") or r["order_id"] not in existing_ids]
+            duplicates = len(records) - len(new_recs)
+            merged = existing + new_recs
+            info["mode"] = "append"
+            info["new_records"] = len(new_recs)
+            info["duplicates_skipped"] = duplicates
+            info["rows"] = len(merged)
+            records = merged
+        else:
+            info["mode"] = "replace"
     else:
         info["mode"] = "replace"
 
-    data_store._pos_data = records
-    data_store._pos_info = info
-    data_store._uploaded_data = records
-    data_store._upload_info   = info
-    data_store.save_dataset("pos", records, info)
+    data_store.set_pos_for_tenant(tid, records, info)
     msg = (f"Added {info.get('new_records', len(records))} new POS records "
            f"({info.get('duplicates_skipped', 0)} duplicates skipped). "
            f"Total: {len(records):,} records."
@@ -751,19 +761,16 @@ async def upload_pos(file: UploadFile = File(...), mode: str = Query("replace"))
 
 
 @router.delete("/upload/pos/clear")
-def clear_pos():
-    data_store._pos_data      = []
-    data_store._pos_info      = {}
-    data_store._uploaded_data = []
-    data_store._upload_info   = {}
-    data_store.clear_dataset("pos")
+def clear_pos(request: Request = None):
+    tid = _get_tenant_id(request)
+    data_store.clear_pos_for_tenant(tid)
     return {"success": True}
 
 
 @router.get("/data/pos/summary")
-def pos_summary():
-    data = data_store._pos_data
-    info = data_store._pos_info
+def pos_summary(request: Request = None):
+    tid = _get_tenant_id(request)
+    data, info = data_store.get_pos_for_tenant(tid)
     if not data:
         return {"uploaded": False, "info": {}, "summary": {}}
 
@@ -821,7 +828,8 @@ def pos_summary():
 # ── Customer ───────────────────────────────────────────────────────────────────
 
 @router.post("/upload/customer")
-async def upload_customer(file: UploadFile = File(...), mode: str = Query("replace")):
+async def upload_customer(file: UploadFile = File(...), mode: str = Query("replace"),
+                          request: Request = None):
     _check_ext(file.filename)
     raw = await file.read()
     try:
@@ -835,30 +843,33 @@ async def upload_customer(file: UploadFile = File(...), mode: str = Query("repla
     if not records:
         raise HTTPException(status_code=422, detail="No valid rows found.")
 
-    if mode == "append" and data_store._customer_data:
-        phone_map = {r["phone"]: i for i, r in enumerate(data_store._customer_data) if r.get("phone")}
-        merged = list(data_store._customer_data)
-        new_count, updated_count = 0, 0
-        for r in records:
-            phone = r.get("phone", "")
-            if phone and phone in phone_map:
-                merged[phone_map[phone]] = r   # update existing customer
-                updated_count += 1
-            else:
-                merged.append(r)
-                new_count += 1
-        info["mode"] = "append"
-        info["new_records"] = new_count
-        info["updated_records"] = updated_count
-        info["rows"] = len(merged)
-        info["total_customers"] = len(merged)
-        records = merged
+    tid = _get_tenant_id(request)
+    if mode == "append":
+        existing, _ = data_store.get_customer_for_tenant(tid)
+        if existing:
+            phone_map = {r["phone"]: i for i, r in enumerate(existing) if r.get("phone")}
+            merged = list(existing)
+            new_count, updated_count = 0, 0
+            for r in records:
+                phone = r.get("phone", "")
+                if phone and phone in phone_map:
+                    merged[phone_map[phone]] = r
+                    updated_count += 1
+                else:
+                    merged.append(r)
+                    new_count += 1
+            info["mode"] = "append"
+            info["new_records"] = new_count
+            info["updated_records"] = updated_count
+            info["rows"] = len(merged)
+            info["total_customers"] = len(merged)
+            records = merged
+        else:
+            info["mode"] = "replace"
     else:
         info["mode"] = "replace"
 
-    data_store._customer_data = records
-    data_store._customer_info = info
-    data_store.save_dataset("customer", records, info)
+    data_store.set_customer_for_tenant(tid, records, info)
     msg = (f"Added {info.get('new_records', 0)} new + updated {info.get('updated_records', 0)} existing customers. "
            f"Total: {len(records):,} customers."
            if mode == "append" else
@@ -867,17 +878,16 @@ async def upload_customer(file: UploadFile = File(...), mode: str = Query("repla
 
 
 @router.delete("/upload/customer/clear")
-def clear_customer():
-    data_store._customer_data = []
-    data_store._customer_info = {}
-    data_store.clear_dataset("customer")
+def clear_customer(request: Request = None):
+    tid = _get_tenant_id(request)
+    data_store.clear_customer_for_tenant(tid)
     return {"success": True}
 
 
 @router.get("/data/customer/summary")
-def customer_summary():
-    data = data_store._customer_data
-    info = data_store._customer_info
+def customer_summary(request: Request = None):
+    tid = _get_tenant_id(request)
+    data, info = data_store.get_customer_for_tenant(tid)
     if not data:
         return {"uploaded": False, "info": {}, "summary": {}}
 
@@ -1200,7 +1210,7 @@ def _parse_menu(raw: bytes, filename: str) -> tuple[list, dict]:
 
 
 @router.post("/upload/menu")
-async def upload_menu(file: UploadFile = File(...)):
+async def upload_menu(file: UploadFile = File(...), request: Request = None):
     if not any(file.filename.lower().endswith(ext) for ext in (".xlsx", ".xls", ".csv")):
         raise HTTPException(status_code=400, detail="Only .xlsx, .xls, or .csv files are supported.")
     raw = await file.read()
@@ -1214,24 +1224,22 @@ async def upload_menu(file: UploadFile = File(...)):
     if not records:
         raise HTTPException(status_code=422, detail="No valid menu rows found.")
 
-    data_store._menu_data = records
-    data_store._menu_info = info
-    data_store.save_dataset("menu", records, info)
+    tid = _get_tenant_id(request)
+    data_store.set_menu_for_tenant(tid, records, info)
     return {"success": True, "message": f"Loaded {len(records)} menu items.", "info": info}
 
 
 @router.delete("/upload/menu/clear")
-def clear_menu():
-    data_store._menu_data = []
-    data_store._menu_info = {}
-    data_store.clear_dataset("menu")
+def clear_menu(request: Request = None):
+    tid = _get_tenant_id(request)
+    data_store.clear_menu_for_tenant(tid)
     return {"success": True}
 
 
 @router.get("/data/menu/summary")
-def menu_summary():
-    data = data_store._menu_data
-    info = data_store._menu_info
+def menu_summary(request: Request = None):
+    tid = _get_tenant_id(request)
+    data, info = data_store.get_menu_for_tenant(tid)
     if not data:
         return {"uploaded": False, "info": {}, "summary": {}}
 
@@ -1277,15 +1285,21 @@ def menu_summary():
 # ── Paginated records viewer ───────────────────────────────────────────────────
 
 @router.get("/data/{dtype}/records")
-def get_records(dtype: str, page: int = 1, per_page: int = 50, search: str = ""):
+def get_records(dtype: str, page: int = 1, per_page: int = 50, search: str = "",
+                request: Request = None):
     """Return a paginated, optionally searched slice of any uploaded dataset."""
     from sentiment_engine import get_engine
+    tid = _get_tenant_id(request)
+    fin_data, _  = data_store.get_financial_for_tenant(tid)
+    pos_data, _  = data_store.get_pos_for_tenant(tid)
+    cust_data, _ = data_store.get_customer_for_tenant(tid)
+    menu_data, _ = data_store.get_menu_for_tenant(tid)
 
     dtype_map = {
-        "financial": data_store._financial_data,
-        "pos":       data_store._pos_data,
-        "customer":  data_store._customer_data,
-        "menu":      data_store._menu_data,
+        "financial": fin_data,
+        "pos":       pos_data,
+        "customer":  cust_data,
+        "menu":      menu_data,
     }
     if dtype == "reviews":
         data = get_engine().records
@@ -1322,29 +1336,34 @@ def get_records(dtype: str, page: int = 1, per_page: int = 50, search: str = "")
 # ── Aggregate status ───────────────────────────────────────────────────────────
 
 @router.get("/upload/status/all")
-def upload_status_all():
+def upload_status_all(request: Request = None):
     from sentiment_engine import get_engine
     engine = get_engine()
+    tid = _get_tenant_id(request)
+    fin_data,  fin_info  = data_store.get_financial_for_tenant(tid)
+    pos_data,  pos_info  = data_store.get_pos_for_tenant(tid)
+    cust_data, cust_info = data_store.get_customer_for_tenant(tid)
+    menu_data, menu_info = data_store.get_menu_for_tenant(tid)
     return {
         "financial": {
-            "uploaded": bool(data_store._financial_data),
-            "info":     data_store._financial_info,
+            "uploaded": bool(fin_data),
+            "info":     fin_info,
         },
         "pos": {
-            "uploaded": bool(data_store._pos_data),
-            "info":     data_store._pos_info,
+            "uploaded": bool(pos_data),
+            "info":     pos_info,
         },
         "customer": {
-            "uploaded": bool(data_store._customer_data),
-            "info":     data_store._customer_info,
+            "uploaded": bool(cust_data),
+            "info":     cust_info,
         },
         "reviews": {
             "uploaded": engine.has_data,
             "info":     engine.info,
         },
         "menu": {
-            "uploaded": bool(data_store._menu_data),
-            "info":     data_store._menu_info,
+            "uploaded": bool(menu_data),
+            "info":     menu_info,
         },
     }
 

@@ -155,6 +155,31 @@ def _sync_data_store():
     data_store._uploaded_data = _uploaded_data
     data_store._upload_info   = _upload_info
 
+
+# ─── Per-tenant request helpers ───────────────────────────────────────────────
+# All analytics endpoints call these helpers so data is scoped to the
+# authenticated tenant (new cafés) while the system/demo tenant keeps its
+# existing module-level globals.
+
+def _req_tenant_id(request: Optional[Request] = None) -> str:
+    """Extract tenant_id from JWT Bearer token; fall back to system tenant."""
+    import auth_utils as _au
+    import tenant_store as _ts
+    if not request:
+        return _ts.SYSTEM_TENANT_ID
+    auth_header = request.headers.get("Authorization", "")
+    return _au.extract_tenant_id(auth_header) or _ts.SYSTEM_TENANT_ID
+
+
+def _req_data(request: Optional[Request] = None) -> list:
+    """Return the POS/uploaded data for the calling tenant."""
+    return data_store.get_data_for_tenant(_req_tenant_id(request))
+
+
+def _req_overrides(request: Optional[Request] = None) -> dict:
+    """Return the decision-overrides dict for the calling tenant."""
+    return data_store.get_decision_overrides_for_tenant(_req_tenant_id(request))
+
 # ─────────────────────────────────────────────
 # EXCEL COLUMN DETECTION
 # ─────────────────────────────────────────────
@@ -417,9 +442,11 @@ def _weekday_forecast(data: list, days: int = 7) -> list:
     return result
 
 
-def _generate_decisions(data: list) -> list:
+def _generate_decisions(data: list, overrides: Optional[dict] = None) -> list:
     if not data:
         return []
+    # Use caller-supplied overrides dict or fall back to system-level global
+    _ov = overrides if overrides is not None else _decision_overrides
 
     items    = _item_stats(data)
     dates    = sorted(set(r["date"] for r in data))
@@ -545,8 +572,8 @@ def _generate_decisions(data: list) -> list:
 
     # Apply approve/reject overrides
     for d in decisions:
-        if d["id"] in _decision_overrides:
-            d["status"] = _decision_overrides[d["id"]]
+        if d["id"] in _ov:
+            d["status"] = _ov[d["id"]]
 
     return decisions
 
@@ -1166,11 +1193,17 @@ async def upload_excel(file: UploadFile = File(...), request: Request = None):
     if len(records) == 0:
         raise HTTPException(status_code=422, detail="No valid rows found. Check column names and data.")
 
-    _uploaded_data = records
-    _upload_info = {**info, "filename": file.filename,
-                    "uploaded_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-    _decision_overrides = {}  # reset on new upload
-    _sync_data_store()
+    upload_info_new = {**info, "filename": file.filename,
+                       "uploaded_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+    data_store.set_uploaded_for_tenant(tenant_id, records, upload_info_new)
+    data_store.clear_overrides_for_tenant(tenant_id)  # reset overrides on new upload
+    # Also keep module-level globals in sync for system tenant (chatbot etc.)
+    if tenant_id == _ts.SYSTEM_TENANT_ID:
+        global _uploaded_data, _upload_info, _decision_overrides
+        _uploaded_data = records
+        _upload_info = upload_info_new
+        _decision_overrides = {}
+        _sync_data_store()
 
     _audit.log_action(username=username, module="upload_data", action="FILE_UPLOAD",
         description=f"Uploaded '{file.filename}' — {len(records)} records, {info.get('unique_dates', 0)} days, "
@@ -1180,13 +1213,16 @@ async def upload_excel(file: UploadFile = File(...), request: Request = None):
     # Record storage usage for new tenants
     _ts.record_upload(tenant_id, len(raw))
 
-    return {"success": True, "message": f"Loaded {len(records)} records.", "info": _upload_info}
+    _, latest_info = data_store.get_uploaded_for_tenant(tenant_id)
+    return {"success": True, "message": f"Loaded {len(records)} records.", "info": latest_info}
 
 
 @app.get("/api/upload/status")
-def upload_status():
-    if _uploaded_data:
-        return {"uploaded": True, "info": _upload_info}
+def upload_status(request: Request = None):
+    tid = _req_tenant_id(request)
+    upl_data, upl_info = data_store.get_uploaded_for_tenant(tid)
+    if upl_data:
+        return {"uploaded": True, "info": upl_info}
     return {"uploaded": False, "info": {}}
 
 
@@ -1194,13 +1230,17 @@ def upload_status():
 def clear_upload(request: Request = None):
     global _uploaded_data, _upload_info, _decision_overrides
     username = request.headers.get("X-Username", "anonymous") if request else "anonymous"
+    tid = _req_tenant_id(request)
     _audit.log_action(username=username, module="upload_data", action="FILE_CLEAR",
         description="Cleared uploaded data — reverted to demo mode",
         ip_address=(request.client.host if request and request.client else ""))
-    _uploaded_data = []
-    _upload_info = {}
-    _decision_overrides = {}
-    _sync_data_store()
+    data_store.clear_all_for_tenant(tid)
+    # Also clear module-level globals for system tenant
+    if tid == "system":
+        _uploaded_data = []
+        _upload_info = {}
+        _decision_overrides = {}
+        _sync_data_store()
     return {"success": True, "message": "Reverted to demo data."}
 
 # ─────────────────────────────────────────────
@@ -1208,8 +1248,9 @@ def clear_upload(request: Request = None):
 # ─────────────────────────────────────────────
 
 @app.get("/api/dashboard/overview")
-def dashboard_overview():
-    data = get_data()
+def dashboard_overview(request: Request = None):
+    data = _req_data(request)
+    overrides = _req_overrides(request)
     if not data:
         return {
             "revenue_today": 0, "revenue_yesterday": 0,
@@ -1230,7 +1271,7 @@ def dashboard_overview():
 
     rev_change = round((today_rev / max(prev_rev, 1) - 1) * 100, 1) if prev_rev > 0 else 0
     avg_ov     = round(today_rev / max(today_ord, 1), 0)
-    decisions  = _generate_decisions(data)
+    decisions  = _generate_decisions(data, overrides)
     pending    = sum(1 for d in decisions if d["status"] == "pending")
 
     items = _item_stats(data)
@@ -1259,50 +1300,53 @@ def dashboard_overview():
 # ─────────────────────────────────────────────
 
 @app.get("/api/layer1/summary")
-def layer1_summary():
-    data = get_data()
+def layer1_summary(request: Request = None):
+    tid  = _req_tenant_id(request)
+    data = data_store.get_data_for_tenant(tid)
     dates = sorted(set(r["date"] for r in data))
+
+    fin_data, fin_info   = data_store.get_financial_for_tenant(tid)
+    pos_data, pos_info   = data_store.get_pos_for_tenant(tid)
+    cust_data, cust_info = data_store.get_customer_for_tenant(tid)
+    menu_data, menu_info = data_store.get_menu_for_tenant(tid)
+    upl_data, upl_info   = data_store.get_uploaded_for_tenant(tid)
 
     # Build sources from actually-uploaded datasets
     sources = []
-    if data_store._financial_data:
-        fi = data_store._financial_info
-        sources.append({"name": fi.get("filename", "Financial Data"), "records": len(data_store._financial_data),
-                        "status": "active", "last_sync": fi.get("uploaded_at", "—"), "type": "financial"})
-    if data_store._pos_data:
-        pi = data_store._pos_info
-        sources.append({"name": pi.get("filename", "POS Data"), "records": len(data_store._pos_data),
-                        "status": "active", "last_sync": pi.get("uploaded_at", "—"), "type": "pos"})
-    if data_store._customer_data:
-        ci = data_store._customer_info
-        sources.append({"name": ci.get("filename", "Customer Data"), "records": len(data_store._customer_data),
-                        "status": "active", "last_sync": ci.get("uploaded_at", "—"), "type": "customer"})
+    if fin_data:
+        sources.append({"name": fin_info.get("filename", "Financial Data"), "records": len(fin_data),
+                        "status": "active", "last_sync": fin_info.get("uploaded_at", "—"), "type": "financial"})
+    if pos_data:
+        sources.append({"name": pos_info.get("filename", "POS Data"), "records": len(pos_data),
+                        "status": "active", "last_sync": pos_info.get("uploaded_at", "—"), "type": "pos"})
+    if cust_data:
+        sources.append({"name": cust_info.get("filename", "Customer Data"), "records": len(cust_data),
+                        "status": "active", "last_sync": cust_info.get("uploaded_at", "—"), "type": "customer"})
     if get_sentiment_engine().has_data:
         si = get_sentiment_engine().info
         sources.append({"name": si.get("filename", "Reviews"), "records": si.get("total_reviews", 0),
                         "status": "active", "last_sync": si.get("uploaded_at", "—"), "type": "reviews"})
-    if data_store._menu_data:
-        mi = data_store._menu_info
-        sources.append({"name": mi.get("filename", "Menu Data"), "records": len(data_store._menu_data),
-                        "status": "active", "last_sync": mi.get("uploaded_at", "—"), "type": "menu"})
+    if menu_data:
+        sources.append({"name": menu_info.get("filename", "Menu Data"), "records": len(menu_data),
+                        "status": "active", "last_sync": menu_info.get("uploaded_at", "—"), "type": "menu"})
 
     return {
         "total_records":    len(data),
         "sources":          sources,
-        "menu_items":       data_store._menu_data[:20],
+        "menu_items":       menu_data[:20],
         "inventory_items":  [],
         "recent_sales":     data[-20:],
         "low_stock_count":  0,
         "date_range":       {"from": dates[0], "to": dates[-1]} if dates else {},
         "unique_items":     len(set(r["item_name"] for r in data)),
         "data_source":      "uploaded" if data else "none",
-        "upload_info":      _upload_info if _uploaded_data else {},
+        "upload_info":      upl_info if upl_data else {},
     }
 
 
 @app.get("/api/layer1/platforms")
-def platform_data():
-    return _platform_breakdown(get_data())
+def platform_data(request: Request = None):
+    return _platform_breakdown(_req_data(request))
 
 
 class SalesEntry(BaseModel):
@@ -1316,36 +1360,44 @@ class SalesEntry(BaseModel):
 _manual_entries: list = []
 
 @app.post("/api/layer1/sales")
-def add_sales(entry: SalesEntry):
+def add_sales(entry: SalesEntry, request: Request = None):
+    tid = _req_tenant_id(request)
+    pos_data, _ = data_store.get_pos_for_tenant(tid)
+    upl_data, upl_info = data_store.get_uploaded_for_tenant(tid)
+    cost_ratio = (
+        sum(r["cost"] for r in pos_data if r.get("cost", 0) > 0) /
+        max(sum(r["revenue"] for r in pos_data if r.get("cost", 0) > 0 and r.get("revenue", 0) > 0), 1)
+        if pos_data and any(r.get("cost", 0) > 0 for r in pos_data) else 0.0
+    )
     row = {**entry.model_dump(),
            "revenue": entry.quantity * entry.price,
-           "cost":    round(entry.quantity * entry.price * (
-    sum(r["cost"] for r in data_store._pos_data if r.get("cost", 0) > 0) /
-    max(sum(r["revenue"] for r in data_store._pos_data if r.get("cost", 0) > 0 and r.get("revenue", 0) > 0), 1)
-    if data_store._pos_data and any(r.get("cost", 0) > 0 for r in data_store._pos_data) else 0.0
-), 2),
+           "cost":    round(entry.quantity * entry.price * cost_ratio, 2),
            "quantity": float(entry.quantity)}
     _manual_entries.append(row)
-    if _uploaded_data:
-        _uploaded_data.append(row)
+    if upl_data:
+        upl_data.append(row)
+        data_store.set_uploaded_for_tenant(tid, upl_data, upl_info)
     return {"success": True, "message": "Entry recorded.", "id": len(_manual_entries)}
 
 # ─────────────────────────────────────────────
 # LAYER 2 — DATA ENGINEERING
 # ─────────────────────────────────────────────
 
-def _dq_accuracy() -> float:
+def _dq_accuracy(tid: str = "system") -> float:
     """Ratio of records that passed validation vs total attempted."""
-    good = len(data_store._pos_data) + len(data_store._financial_data) + len(data_store._customer_data)
-    skipped = (data_store._pos_info.get("skipped", 0) +
-               data_store._financial_info.get("skipped", 0) +
-               data_store._customer_info.get("skipped", 0))
+    pos_data, pos_info = data_store.get_pos_for_tenant(tid)
+    fin_data, fin_info = data_store.get_financial_for_tenant(tid)
+    cust_data, cust_info = data_store.get_customer_for_tenant(tid)
+    good = len(pos_data) + len(fin_data) + len(cust_data)
+    skipped = (pos_info.get("skipped", 0) +
+               fin_info.get("skipped", 0) +
+               cust_info.get("skipped", 0))
     return round(good / max(good + skipped, 1) * 100, 1) if good else 0.0
 
 
-def _dq_consistency() -> float:
+def _dq_consistency(tid: str = "system") -> float:
     """Detect duplicate dates in financial data (1 record per day expected)."""
-    fd = data_store._financial_data
+    fd, _ = data_store.get_financial_for_tenant(tid)
     if not fd:
         return 100.0
     dates = [r["date"] for r in fd]
@@ -1353,11 +1405,13 @@ def _dq_consistency() -> float:
     return round(max(0.0, 100.0 - (dups / max(len(dates), 1)) * 100), 1)
 
 
-def _dq_timeliness() -> float:
+def _dq_timeliness(tid: str = "system") -> float:
     """Score based on how recently data was uploaded (100% = today, decays hourly)."""
+    _, pos_info = data_store.get_pos_for_tenant(tid)
+    _, fin_info = data_store.get_financial_for_tenant(tid)
     timestamps = [
-        data_store._pos_info.get("uploaded_at", ""),
-        data_store._financial_info.get("uploaded_at", ""),
+        pos_info.get("uploaded_at", ""),
+        fin_info.get("uploaded_at", ""),
     ]
     latest = None
     for ts in timestamps:
@@ -1375,30 +1429,33 @@ def _dq_timeliness() -> float:
 
 
 @app.get("/api/layer2/pipeline-status")
-def pipeline_status():
-    data = get_data()
+def pipeline_status(request: Request = None):
+    tid = _req_tenant_id(request)
+    data = data_store.get_data_for_tenant(tid)
     se = get_sentiment_engine()
+
+    fin_data, fin_info   = data_store.get_financial_for_tenant(tid)
+    pos_data, pos_info   = data_store.get_pos_for_tenant(tid)
+    cust_data, cust_info = data_store.get_customer_for_tenant(tid)
+    menu_data, menu_info = data_store.get_menu_for_tenant(tid)
 
     pipelines = []
 
-    if data_store._financial_data:
-        fi = data_store._financial_info
+    if fin_data:
         pipelines.append({"name": "Financial Data ETL", "status": "completed",
-                          "last_run": fi.get("uploaded_at", "—"), "records": len(data_store._financial_data),
+                          "last_run": fin_info.get("uploaded_at", "—"), "records": len(fin_data),
                           "success_rate": 100.0, "duration": "—"})
 
-    if data_store._pos_data:
-        pi = data_store._pos_info
+    if pos_data:
         pipelines.append({"name": "POS Billing ETL", "status": "completed",
-                          "last_run": pi.get("uploaded_at", "—"), "records": len(data_store._pos_data),
-                          "success_rate": round(len(data_store._pos_data) /
-                              max(len(data_store._pos_data) + pi.get("skipped", 0), 1) * 100, 1),
+                          "last_run": pos_info.get("uploaded_at", "—"), "records": len(pos_data),
+                          "success_rate": round(len(pos_data) /
+                              max(len(pos_data) + pos_info.get("skipped", 0), 1) * 100, 1),
                           "duration": "—"})
 
-    if data_store._customer_data:
-        ci = data_store._customer_info
+    if cust_data:
         pipelines.append({"name": "Customer Data ETL", "status": "completed",
-                          "last_run": ci.get("uploaded_at", "—"), "records": len(data_store._customer_data),
+                          "last_run": cust_info.get("uploaded_at", "—"), "records": len(cust_data),
                           "success_rate": 100.0, "duration": "—"})
 
     if se.has_data:
@@ -1409,10 +1466,9 @@ def pipeline_status():
                           "success_rate": round(se.stats.get("avg_model_confidence", 100.0), 1),
                           "duration": "—"})
 
-    if data_store._menu_data:
-        mi = data_store._menu_info
+    if menu_data:
         pipelines.append({"name": "Menu Catalogue ETL", "status": "completed",
-                          "last_run": mi.get("uploaded_at", "—"), "records": len(data_store._menu_data),
+                          "last_run": menu_info.get("uploaded_at", "—"), "records": len(menu_data),
                           "success_rate": 100.0, "duration": "—"})
 
     if data:
@@ -1422,16 +1478,16 @@ def pipeline_status():
                           "success_rate": 100.0, "duration": "—"})
 
     total = len(data)
-    skipped = data_store._pos_info.get("skipped", 0) + data_store._financial_info.get("skipped", 0)
+    skipped = pos_info.get("skipped", 0) + fin_info.get("skipped", 0)
     completeness = round((total / max(total + skipped, 1)) * 100, 1) if total else 0.0
 
     return {
         "pipelines": pipelines,
         "data_quality": {
             "completeness": completeness,
-            "accuracy":     _dq_accuracy(),
-            "consistency":  _dq_consistency(),
-            "timeliness":   _dq_timeliness(),
+            "accuracy":     _dq_accuracy(tid),
+            "consistency":  _dq_consistency(tid),
+            "timeliness":   _dq_timeliness(tid),
         },
         "total_records_today": total,
         "anomalies_detected":  0,
@@ -1439,8 +1495,8 @@ def pipeline_status():
 
 
 @app.get("/api/layer2/processed-data")
-def processed_data():
-    data  = get_data()
+def processed_data(request: Request = None):
+    data  = _req_data(request)
     daily = _daily_revenue(data, 14)
     cats  = _category_breakdown(data)
     return {
@@ -1451,13 +1507,19 @@ def processed_data():
     }
 
 @app.get("/api/layer2/insights")
-def data_insights():
+def data_insights(request: Request = None):
     """Per-dataset AI insights derived from uploaded data."""
+    tid = _req_tenant_id(request)
     result: dict = {}
 
-    if data_store._financial_data:
-        fd = data_store._financial_data
-        info = data_store._financial_info
+    fin_data, fin_info   = data_store.get_financial_for_tenant(tid)
+    pos_data, pos_info   = data_store.get_pos_for_tenant(tid)
+    cust_data, cust_info = data_store.get_customer_for_tenant(tid)
+    menu_data, menu_info = data_store.get_menu_for_tenant(tid)
+
+    if fin_data:
+        fd = fin_data
+        info = fin_info
         total_rev = sum(r["daily_revenue"] for r in fd)
         dates = sorted(set(r["date"] for r in fd))
         gm_vals = [r["gross_margin_pct"] for r in fd if r.get("gross_margin_pct") is not None]
@@ -1478,9 +1540,9 @@ def data_insights():
             ],
         }
 
-    if data_store._pos_data:
-        pd_ = data_store._pos_data
-        info = data_store._pos_info
+    if pos_data:
+        pd_ = pos_data
+        info = pos_info
         total_orders = len(pd_)
         total_rev = sum(r["bill_amount"] for r in pd_)
         avg_bill = round(total_rev / max(total_orders, 1), 0)
@@ -1511,9 +1573,9 @@ def data_insights():
             ],
         }
 
-    if data_store._customer_data:
-        cd = data_store._customer_data
-        info = data_store._customer_info
+    if cust_data:
+        cd = cust_data
+        info = cust_info
         total = len(cd)
         aov_vals = [r["avg_order_value"] for r in cd if r.get("avg_order_value")]
         avg_aov = round(sum(aov_vals) / len(aov_vals), 0) if aov_vals else None
@@ -1565,9 +1627,9 @@ def data_insights():
             ],
         }
 
-    if data_store._menu_data:
-        md = data_store._menu_data
-        info = data_store._menu_info
+    if menu_data:
+        md = menu_data
+        info = menu_info
         cats: dict = {}
         for r in md:
             c = r.get("category", "Unknown")
@@ -1600,15 +1662,17 @@ def data_insights():
 # ─────────────────────────────────────────────
 
 @app.get("/api/layer3/forecast")
-def forecast():
-    data   = get_data()
+def forecast(request: Request = None):
+    tid    = _req_tenant_id(request)
+    data   = data_store.get_data_for_tenant(tid)
+    pos_data, _ = data_store.get_pos_for_tenant(tid)
     n_days = len(set(r["date"] for r in data))
 
     # Try XGBoost first (needs ≥14 days); fall back to weekday-average heuristic
     ml_result = None
-    if data_store._pos_data and len(set(r["date"] for r in data_store._pos_data)) >= 14:
+    if pos_data and len(set(r["date"] for r in pos_data)) >= 14:
         try:
-            ml_result = ml_models.forecast_revenue(data_store._pos_data, 7)
+            ml_result = ml_models.forecast_revenue(pos_data, 7)
         except Exception:
             ml_result = None
 
@@ -1650,8 +1714,10 @@ def market_insights():
 
 
 @app.get("/api/layer3/recommendations")
-def product_recommendations():
-    data  = get_data()
+def product_recommendations(request: Request = None):
+    tid   = _req_tenant_id(request)
+    data  = data_store.get_data_for_tenant(tid)
+    pos_data, _ = data_store.get_pos_for_tenant(tid)
     items = _item_stats(data)
     n_days = max(len(set(r["date"] for r in data)), 1)
 
@@ -1667,9 +1733,9 @@ def product_recommendations():
 
     # Use real cross-sell association rules from trained model
     fbt = []
-    if data_store._pos_data:
+    if pos_data:
         try:
-            rules = ml_models.cross_sell_recommendations(data_store._pos_data, top_n=6)
+            rules = ml_models.cross_sell_recommendations(pos_data, top_n=6)
             for r in rules:
                 fbt.append({
                     "items":      [r["antecedent"], r["consequent"]],
@@ -1682,7 +1748,7 @@ def product_recommendations():
 
     if not fbt:
         from collections import defaultdict as _dd, Counter as _Ctr
-        pos = data_store._pos_data
+        pos = pos_data
         if pos and any(r.get("order_id") for r in pos):
             order_items: dict = _dd(set)
             for r in pos:
@@ -1719,8 +1785,10 @@ def product_recommendations():
 
 
 @app.get("/api/layer3/segmentation")
-def customer_segmentation():
-    data      = get_data()
+def customer_segmentation(request: Request = None):
+    tid       = _req_tenant_id(request)
+    data      = data_store.get_data_for_tenant(tid)
+    menu_data, _ = data_store.get_menu_for_tenant(tid)
     platforms = _platform_breakdown(data)
     items     = _item_stats(data)
 
@@ -1739,7 +1807,7 @@ def customer_segmentation():
 
     # Build a price lookup from uploaded menu catalogue (most accurate source)
     menu_price_lookup: dict = {}
-    for m in data_store._menu_data:
+    for m in menu_data:
         name_key = str(m.get("item", "")).lower().strip()
         bp = m.get("base_price", 0)
         if bp and bp > 0:
@@ -1782,8 +1850,9 @@ def customer_segmentation():
 # ─────────────────────────────────────────────
 
 @app.get("/api/ml/forecast")
-def ml_forecast():
-    pos = data_store._pos_data
+def ml_forecast(request: Request = None):
+    tid = _req_tenant_id(request)
+    pos, _ = data_store.get_pos_for_tenant(tid)
     if not pos:
         return {"error": "No POS data uploaded", "forecast": []}
     try:
@@ -1793,8 +1862,9 @@ def ml_forecast():
 
 
 @app.get("/api/ml/platform-forecast")
-def ml_platform_forecast():
-    pos = data_store._pos_data
+def ml_platform_forecast(request: Request = None):
+    tid = _req_tenant_id(request)
+    pos, _ = data_store.get_pos_for_tenant(tid)
     if not pos:
         return []
     try:
@@ -1804,8 +1874,9 @@ def ml_platform_forecast():
 
 
 @app.get("/api/ml/peak-hours")
-def ml_peak_hours():
-    pos = data_store._pos_data
+def ml_peak_hours(request: Request = None):
+    tid = _req_tenant_id(request)
+    pos, _ = data_store.get_pos_for_tenant(tid)
     if not pos:
         return {"error": "No POS data uploaded"}
     try:
@@ -1815,8 +1886,9 @@ def ml_peak_hours():
 
 
 @app.get("/api/ml/cancellation-risk")
-def ml_cancellation_risk():
-    pos = data_store._pos_data
+def ml_cancellation_risk(request: Request = None):
+    tid = _req_tenant_id(request)
+    pos, _ = data_store.get_pos_for_tenant(tid)
     if not pos:
         return {"error": "No POS data uploaded", "by_platform": [], "by_payment": [], "overall_risk": 0}
     try:
@@ -1826,9 +1898,11 @@ def ml_cancellation_risk():
 
 
 @app.get("/api/ml/cross-sell")
-def ml_cross_sell():
+def ml_cross_sell(request: Request = None):
+    tid = _req_tenant_id(request)
+    pos_data, _ = data_store.get_pos_for_tenant(tid)
     # Use multi-upload POS data first (richer data with order_id), then fall back to legacy
-    pos = data_store._pos_data or get_data()
+    pos = pos_data or data_store.get_data_for_tenant(tid)
     try:
         rules = ml_models.cross_sell_recommendations(pos, top_n=15)
         return {"rules": rules, "total_model_rules": len(rules), "data_source": "apriori_model" if pos else "none"}
@@ -1837,9 +1911,10 @@ def ml_cross_sell():
 
 
 @app.get("/api/ml/dynamic-pricing")
-def ml_dynamic_pricing():
-    pos  = data_store._pos_data
-    menu = data_store._menu_data
+def ml_dynamic_pricing(request: Request = None):
+    tid = _req_tenant_id(request)
+    pos, _  = data_store.get_pos_for_tenant(tid)
+    menu, _ = data_store.get_menu_for_tenant(tid)
     try:
         return {"suggestions": ml_models.dynamic_pricing_suggestions(pos, menu_data=menu)}
     except Exception as e:
@@ -1859,12 +1934,13 @@ def ml_model_comparison():
 # ─────────────────────────────────────────────
 
 @app.get("/api/layer4/decisions")
-def get_decisions():
-    decisions = _generate_decisions(get_data())
+def get_decisions(request: Request = None):
+    overrides = _req_overrides(request)
+    decisions = _generate_decisions(_req_data(request), overrides)
     # Merge sentiment-based decisions (IDs 100+)
     for sd in get_sentiment_engine().get_decisions():
-        if sd["id"] in _decision_overrides:
-            sd["status"] = _decision_overrides[sd["id"]]
+        if sd["id"] in overrides:
+            sd["status"] = overrides[sd["id"]]
         decisions.append(sd)
     return {
         "decisions": decisions,
@@ -1886,7 +1962,8 @@ def sentiment_overview():
 
 @app.post("/api/layer4/decisions/{decision_id}/approve")
 def approve_decision(decision_id: int, request: Request = None):
-    _decision_overrides[decision_id] = "approved"
+    tid = _req_tenant_id(request)
+    data_store.set_decision_override_for_tenant(tid, decision_id, "approved")
     username = request.headers.get("X-Username", "anonymous") if request else "anonymous"
     _audit.log_action(username=username, module="decision_engine", action="DECISION_APPROVE",
         description=f"Approved decision #{decision_id}",
@@ -1896,7 +1973,8 @@ def approve_decision(decision_id: int, request: Request = None):
 
 @app.post("/api/layer4/decisions/{decision_id}/reject")
 def reject_decision(decision_id: int, request: Request = None):
-    _decision_overrides[decision_id] = "rejected"
+    tid = _req_tenant_id(request)
+    data_store.set_decision_override_for_tenant(tid, decision_id, "rejected")
     username = request.headers.get("X-Username", "anonymous") if request else "anonymous"
     _audit.log_action(username=username, module="decision_engine", action="DECISION_REJECT",
         description=f"Rejected decision #{decision_id}",
@@ -1910,7 +1988,7 @@ def reject_decision(decision_id: int, request: Request = None):
 import cafe_os_models as _cos
 
 @app.get("/api/layer5/autonomous-actions")
-def autonomous_actions():
+def autonomous_actions(request: Request = None):
     """
     Return AI-driven autonomous actions for AI-Powered Execution.
 
@@ -1918,12 +1996,13 @@ def autonomous_actions():
     1. Decisions approved by the user in the Decision Engine (primary — always shown)
     2. XGBoost price/demand model actions (secondary — shown when models are available)
     """
-    pos_data = get_data()
+    overrides = _req_overrides(request)
+    pos_data = _req_data(request)
     actions: list = []
     aid = 1
 
     # ── Source 1: Approved decisions from the Decision Engine ─────────────────
-    all_decisions  = _generate_decisions(pos_data)
+    all_decisions  = _generate_decisions(pos_data, overrides)
     # Also include sentiment decisions
     for sd in get_sentiment_engine().get_decisions():
         all_decisions.append(sd)
@@ -1935,7 +2014,7 @@ def autonomous_actions():
         "staffing":  "alert",
     }
     for d in all_decisions:
-        if _decision_overrides.get(d["id"]) == "approved":
+        if overrides.get(d["id"]) == "approved":
             actions.append({
                 "id":          aid,
                 "type":        type_map.get(d["type"], "auto_executed"),
@@ -1973,7 +2052,7 @@ def autonomous_actions():
             "trigger": "System",
         })
 
-    approved_count = sum(1 for d in all_decisions if _decision_overrides.get(d["id"]) == "approved")
+    approved_count = sum(1 for d in all_decisions if overrides.get(d["id"]) == "approved")
 
     # Count model files that actually exist on disk
     _MODELS_DIR = os.path.join(os.path.dirname(__file__), "models")
@@ -1992,7 +2071,7 @@ def autonomous_actions():
     # Alerts fired = pending decisions that haven't been acted on yet
     pending_count = len([
         d for d in all_decisions
-        if _decision_overrides.get(d["id"]) not in ("approved", "rejected")
+        if overrides.get(d["id"]) not in ("approved", "rejected")
     ])
 
     return {
@@ -2007,8 +2086,8 @@ def autonomous_actions():
 
 
 @app.get("/api/layer5/kpis")
-def kpis():
-    return {"kpis": _calc_kpis(get_data())}
+def kpis(request: Request = None):
+    return {"kpis": _calc_kpis(_req_data(request))}
 
 
 @app.get("/api/layer5/demand-forecast")
@@ -2088,7 +2167,7 @@ async def peer_live_search(city: str, area: str):
 @app.post("/api/peers/analyze")
 def peer_analyze(req: PeerAnalyzeRequest, request: Request = None):
     competitors = pc.get_competitors(req.city, req.area)
-    data = get_data()
+    data = _req_data(request)
     our_stats = {}
     if data:
         items = _item_stats(data)
