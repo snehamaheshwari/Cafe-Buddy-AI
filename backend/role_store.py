@@ -285,13 +285,22 @@ def authenticate(username: str, password: str) -> Optional[dict]:
     Validate credentials. On success returns:
       { username, full_name, role_id, role_name, permissions }
     Returns None on failure.
+    Supports both legacy plaintext AND bcrypt-hashed passwords.
     """
     _ensure()
     u = _users.get(username)
     if not u or not u.get("is_active", True):
         return None
-    if u.get("password") != password:
-        return None
+    stored = u.get("password", "")
+    # Use auth_utils verify_password for dual-mode (bcrypt + legacy plaintext)
+    try:
+        from auth_utils import verify_password as _vp
+        if not _vp(password, stored):
+            return None
+    except ImportError:
+        # Fallback to plaintext comparison if auth_utils not available
+        if stored != password:
+            return None
     role = _roles.get(u.get("role_id", "viewer"), _roles.get("viewer", {}))
     return {
         "username":    u["username"],
@@ -386,3 +395,332 @@ def get_permissions(username: str) -> list[str]:
         return []
     role = _roles.get(u.get("role_id", "viewer"), {})
     return list(role.get("permissions", []))
+
+
+# ─── Per-tenant role/user store ───────────────────────────────────────────────
+
+class TenantRoleStore:
+    """
+    Isolated role + user store for a single tenant.
+
+    Data lives in data/{tenant_id}/roles.json.
+    Each tenant starts with the same three system roles (admin, sub_admin, viewer)
+    and the owner's admin account created during registration.
+    """
+
+    def __init__(self, tenant_id: str, data_dir: str):
+        self.tenant_id  = tenant_id
+        self.data_dir   = data_dir
+        self._store_file = os.path.join(data_dir, "roles.json")
+        self._roles: dict[str, dict] = {}
+        self._users: dict[str, dict] = {}
+        self._loaded = False
+
+    # ── Internal I/O ──────────────────────────────────────────────────────────
+
+    def _ensure(self) -> None:
+        if not self._loaded:
+            self._load()
+
+    def _load(self) -> None:
+        os.makedirs(self.data_dir, exist_ok=True)
+        if os.path.exists(self._store_file):
+            try:
+                with open(self._store_file, "r", encoding="utf-8") as f:
+                    obj = json.load(f)
+                self._roles = obj.get("roles", {})
+                self._users = obj.get("users", {})
+            except Exception:
+                self._roles, self._users = {}, {}
+        # Always guarantee system roles exist
+        for rid, role in _DEFAULT_ROLES.items():
+            self._roles.setdefault(rid, dict(role))
+        self._loaded = True
+
+    def _persist(self) -> None:
+        os.makedirs(self.data_dir, exist_ok=True)
+        with open(self._store_file, "w", encoding="utf-8") as f:
+            json.dump({"roles": self._roles, "users": self._users},
+                      f, indent=2, ensure_ascii=False)
+
+    # ── Role helpers ──────────────────────────────────────────────────────────
+
+    def list_roles(self) -> list[dict]:
+        self._ensure()
+        return list(self._roles.values())
+
+    def get_role(self, role_id: str) -> Optional[dict]:
+        self._ensure()
+        return self._roles.get(role_id)
+
+    def create_role(self, role_id: str, name: str,
+                    description: str, permissions: list[str]) -> dict:
+        self._ensure()
+        role_id = role_id.strip().lower().replace(" ", "_")
+        if not role_id:
+            raise ValueError("Role ID cannot be empty")
+        if role_id in self._roles:
+            raise ValueError(f"Role '{role_id}' already exists")
+        bad = [p for p in permissions if p not in ALL_PERMISSIONS]
+        if bad:
+            raise ValueError(f"Unknown permissions: {bad}")
+        role = {
+            "id": role_id, "name": name.strip(),
+            "description": description.strip(),
+            "is_system": False, "permissions": list(permissions),
+        }
+        self._roles[role_id] = role
+        self._persist()
+        return role
+
+    def update_role(self, role_id: str, *, name: Optional[str] = None,
+                    description: Optional[str] = None,
+                    permissions: Optional[list[str]] = None) -> dict:
+        self._ensure()
+        if role_id not in self._roles:
+            raise KeyError(f"Role '{role_id}' not found")
+        r = self._roles[role_id]
+        if name        is not None: r["name"]        = name.strip()
+        if description is not None: r["description"] = description.strip()
+        if permissions is not None:
+            bad = [p for p in permissions if p not in ALL_PERMISSIONS]
+            if bad:
+                raise ValueError(f"Unknown permissions: {bad}")
+            r["permissions"] = list(permissions)
+        self._persist()
+        return r
+
+    def delete_role(self, role_id: str) -> None:
+        self._ensure()
+        if role_id not in self._roles:
+            raise KeyError(f"Role '{role_id}' not found")
+        if self._roles[role_id].get("is_system"):
+            raise ValueError(f"Cannot delete system role '{role_id}'")
+        for user in self._users.values():
+            if user.get("role_id") == role_id:
+                user["role_id"] = "viewer"
+        del self._roles[role_id]
+        self._persist()
+
+    # ── User helpers ──────────────────────────────────────────────────────────
+
+    def _safe(self, u: dict) -> dict:
+        return {k: v for k, v in u.items() if k != "password"}
+
+    def list_users(self) -> list[dict]:
+        self._ensure()
+        return [self._safe(u) for u in self._users.values()]
+
+    def get_user(self, username: str) -> Optional[dict]:
+        self._ensure()
+        u = self._users.get(username)
+        return self._safe(u) if u else None
+
+    def count_users(self) -> int:
+        self._ensure()
+        return len(self._users)
+
+    def create_user(self, username: str, password: str, role_id: str,
+                    full_name: str = "", email: str = "") -> dict:
+        """Create a tenant user. Enforces max_users plan limit."""
+        from tenant_store import get_max_users
+        self._ensure()
+        username = username.strip()
+        if not username:
+            raise ValueError("Username cannot be empty")
+        if not password:
+            raise ValueError("Password cannot be empty")
+        if username in self._users:
+            raise ValueError(f"User '{username}' already exists")
+        if role_id not in self._roles:
+            raise ValueError(f"Role '{role_id}' not found")
+        current = self.count_users()
+        max_u = get_max_users(self.tenant_id)
+        if current >= max_u:
+            raise ValueError(
+                f"Plan limit reached: this workspace allows {max_u} users. "
+                "Upgrade your plan to add more."
+            )
+        try:
+            from auth_utils import hash_password
+            pwd_stored = hash_password(password)
+        except ImportError:
+            pwd_stored = password
+        user = {
+            "username":   username,
+            "password":   pwd_stored,
+            "role_id":    role_id,
+            "full_name":  full_name.strip() or username,
+            "email":      email.strip(),
+            "is_active":  True,
+            "is_system":  False,
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        self._users[username] = user
+        self._persist()
+        return self._safe(user)
+
+    def update_user(self, username: str, *, role_id: Optional[str] = None,
+                    full_name: Optional[str] = None, email: Optional[str] = None,
+                    is_active: Optional[bool] = None,
+                    password: Optional[str] = None) -> dict:
+        self._ensure()
+        if username not in self._users:
+            raise KeyError(f"User '{username}' not found")
+        u = self._users[username]
+        if role_id    is not None:
+            if role_id not in self._roles:
+                raise ValueError(f"Role '{role_id}' not found")
+            u["role_id"] = role_id
+        if full_name  is not None: u["full_name"] = full_name.strip()
+        if email      is not None: u["email"]     = email.strip()
+        if is_active  is not None: u["is_active"] = is_active
+        if password   is not None:
+            if not password:
+                raise ValueError("Password cannot be empty")
+            try:
+                from auth_utils import hash_password
+                u["password"] = hash_password(password)
+            except ImportError:
+                u["password"] = password
+        self._persist()
+        return self._safe(u)
+
+    def delete_user(self, username: str) -> None:
+        self._ensure()
+        if username not in self._users:
+            raise KeyError(f"User '{username}' not found")
+        if self._users[username].get("is_system"):
+            raise ValueError(f"Cannot delete system user '{username}'")
+        del self._users[username]
+        self._persist()
+
+    def authenticate(self, username: str, password: str) -> Optional[dict]:
+        """
+        Validate tenant credentials. Returns auth payload or None.
+        Supports both bcrypt-hashed (new) and plaintext (legacy) passwords.
+        """
+        self._ensure()
+        u = self._users.get(username)
+        if not u or not u.get("is_active", True):
+            return None
+        stored = u.get("password", "")
+        try:
+            from auth_utils import verify_password as _vp
+            if not _vp(password, stored):
+                return None
+        except ImportError:
+            if stored != password:
+                return None
+        role = self._roles.get(u.get("role_id", "viewer"),
+                               self._roles.get("viewer", {}))
+        return {
+            "username":    u["username"],
+            "full_name":   u.get("full_name", u["username"]),
+            "role_id":     role.get("id", "viewer"),
+            "role_name":   role.get("name", "Viewer"),
+            "permissions": list(role.get("permissions", [])),
+        }
+
+    def get_permissions(self, username: str) -> list[str]:
+        self._ensure()
+        u = self._users.get(username)
+        if not u:
+            return []
+        role = self._roles.get(u.get("role_id", "viewer"), {})
+        return list(role.get("permissions", []))
+
+    def seed_admin_user(self, admin_username: str, password_hash: str) -> None:
+        """
+        Insert the first admin user for a newly created tenant.
+        Called once during tenant registration.
+        """
+        self._ensure()
+        if admin_username in self._users:
+            return  # already seeded
+        user = {
+            "username":   admin_username,
+            "password":   password_hash,
+            "role_id":    "admin",
+            "full_name":  admin_username,
+            "email":      "",
+            "is_active":  True,
+            "is_system":  True,   # owner can't be deleted
+            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        self._users[admin_username] = user
+        self._persist()
+
+
+# ─── Factory ──────────────────────────────────────────────────────────────────
+
+_tenant_stores: dict[str, "TenantRoleStore"] = {}
+
+
+def get_tenant_store(tenant_id: str) -> "TenantRoleStore":
+    """
+    Return (and cache) the TenantRoleStore for the given tenant_id.
+    For the system tenant, delegates back to the module-level functions.
+    """
+    from tenant_store import SYSTEM_TENANT_ID, get_tenant_data_dir
+    if tenant_id == SYSTEM_TENANT_ID:
+        # Return a thin wrapper so callers can use a uniform API
+        return _SystemTenantAdapter()    # type: ignore[return-value]
+    if tenant_id not in _tenant_stores:
+        data_dir = get_tenant_data_dir(tenant_id)
+        _tenant_stores[tenant_id] = TenantRoleStore(tenant_id, data_dir)
+    return _tenant_stores[tenant_id]
+
+
+class _SystemTenantAdapter:
+    """
+    Thin adapter that exposes TenantRoleStore's API but delegates to
+    the module-level system-tenant functions.  Used so main.py can call
+    `store.authenticate()` uniformly regardless of tenant type.
+    """
+    tenant_id = "system"
+
+    def authenticate(self, username: str, password: str) -> Optional[dict]:
+        return authenticate(username, password)
+
+    def list_users(self) -> list[dict]:
+        return list_users()
+
+    def get_user(self, username: str) -> Optional[dict]:
+        return get_user(username)
+
+    def create_user(self, username: str, password: str, role_id: str,
+                    full_name: str = "", email: str = "") -> dict:
+        return create_user(username, password, role_id, full_name, email)
+
+    def update_user(self, username: str, **kwargs) -> dict:
+        return update_user(username, **kwargs)
+
+    def delete_user(self, username: str) -> None:
+        return delete_user(username)
+
+    def list_roles(self) -> list[dict]:
+        return list_roles()
+
+    def get_role(self, role_id: str) -> Optional[dict]:
+        return get_role(role_id)
+
+    def create_role(self, role_id: str, name: str,
+                    description: str, permissions: list[str]) -> dict:
+        return create_role(role_id, name, description, permissions)
+
+    def update_role(self, role_id: str, **kwargs) -> dict:
+        return update_role(role_id, **kwargs)
+
+    def delete_role(self, role_id: str) -> None:
+        return delete_role(role_id)
+
+    def get_permissions(self, username: str) -> list[str]:
+        return get_permissions(username)
+
+    def count_users(self) -> int:
+        _ensure()
+        return len(_users)
+
+    def seed_admin_user(self, *args, **kwargs) -> None:
+        pass  # system users are seeded via _DEFAULT_USERS

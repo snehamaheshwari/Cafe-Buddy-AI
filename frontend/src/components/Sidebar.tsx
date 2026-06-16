@@ -197,6 +197,37 @@ export default function Sidebar() {
                     </NavLink>
                   </li>
                 )}
+
+                {hasPermission('role_management') && (
+                  <li>
+                    <NavLink
+                      to="/settings"
+                      className={({ isActive }) =>
+                        `flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all group ${
+                          isActive
+                            ? 'bg-slate-800 text-white shadow-sm'
+                            : 'text-slate-400 hover:bg-slate-800/70 hover:text-slate-200'
+                        }`
+                      }
+                    >
+                      {({ isActive }) => (
+                        <>
+                          <Coffee
+                            size={16}
+                            className={`flex-shrink-0 ${isActive ? 'text-brand-400' : 'text-slate-500 group-hover:text-slate-300'}`}
+                          />
+                          <div className="flex-1 min-w-0">
+                            <div className="font-medium leading-tight truncate">Workspace Settings</div>
+                            <div className={`text-xs leading-tight truncate mt-0.5 ${
+                              isActive ? 'text-slate-400' : 'text-slate-600 group-hover:text-slate-500'
+                            }`}>Branding &amp; plan</div>
+                          </div>
+                          {isActive && <ChevronRight size={13} className="text-brand-400 flex-shrink-0" />}
+                        </>
+                      )}
+                    </NavLink>
+                  </li>
+                )}
               </>
             )}
           </ul>

@@ -8,6 +8,12 @@ export interface AuthUser {
   role: string          // role display name
   permissions: string[]
   token: string
+  // Multi-tenant fields (present for non-system tenants)
+  tenant_id?:   string
+  tenant_slug?: string
+  cafe_name?:   string
+  brand_color?: string
+  logo_url?:    string
 }
 
 interface AuthContextValue {

@@ -1,13 +1,27 @@
 const BASE = '/api'
 
-/** Read stored auth so every request carries X-Username / X-Role. */
+/**
+ * Build auth headers for every outgoing API request.
+ * - New tenant accounts get `Authorization: Bearer <jwt>` (token from login)
+ * - System tenant demo accounts also send the JWT (now a real token)
+ * - Legacy header `X-Username` is included for backward compatibility with
+ *   audit middleware that reads it directly.
+ */
 function authHeaders(): Record<string, string> {
   try {
     const raw = localStorage.getItem('cafe_buddy_auth')
     if (!raw) return {}
     const p = JSON.parse(raw)
     if (!p?.username) return {}
-    return { 'X-Username': p.username, 'X-Role': p.role ?? '' }
+    const headers: Record<string, string> = {
+      'X-Username': p.username,
+      'X-Role':     p.role ?? '',
+    }
+    // Always include JWT Bearer token when available
+    if (p.token && !p.token.startsWith('demo-token-')) {
+      headers['Authorization'] = `Bearer ${p.token}`
+    }
+    return headers
   } catch {
     return {}
   }
@@ -40,8 +54,27 @@ async function del<T>(path: string): Promise<T> {
 
 export const api = {
   auth: {
-    login:  (body: { username: string; password: string }) => post('/auth/login', body),
+    login:  (body: { username: string; password: string; workspace?: string }) =>
+              post('/auth/login', body),
     logout: () => post('/auth/logout'),
+    register: (body: {
+      cafe_name: string; owner_name: string; owner_email: string
+      username: string; password: string
+      brand_color?: string; logo_url?: string
+    }) => post('/auth/register', body),
+    workspace: (slug: string) => get<any>(`/auth/workspace/${slug}`),
+  },
+  tenant: {
+    info:          () => get<any>('/tenant/info'),
+    updateBranding: (body: { cafe_name?: string; brand_color?: string; logo_url?: string }) =>
+                    fetch(`${BASE}/tenant/branding`, {
+                      method: 'PUT',
+                      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+                      body: JSON.stringify(body),
+                    }).then(async r => {
+                      if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.detail || 'Update failed') }
+                      return r.json()
+                    }),
   },
   upload: {
     excel:  (file: File) => {
