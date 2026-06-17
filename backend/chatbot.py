@@ -1217,10 +1217,9 @@ def upcoming_festivals(days: int = 90):
 
 # ─── WhatsApp Notifications via Infinito (api.goinfinito.com) ────────────────
 # Provider: ValueFirst / Infinito  —  https://api.goinfinito.com/unified/v2/send
-# Token valid until 30 Jul 2026.  Override via env vars for production rotation.
+# Token valid until 30 Jun 2026.  Override via env var INFINITO_TOKEN when renewed.
 
 import json as _json
-import urllib.request
 
 # ── Infinito configuration ───────────────────────────────────────────────────
 _INFINITO_URL         = "https://api.goinfinito.com/unified/v2/send"
@@ -1285,37 +1284,49 @@ def _build_daily_summary() -> str:
 
 def _send_via_infinito(phone_clean: str, msg: str) -> dict:
     """
-    Send a WhatsApp message through the Infinito unified API.
+    Send a WhatsApp message through the Infinito unified API using httpx.
 
-    Tries template message first (msgtype 3).  Falls back to plain-text
-    (msgtype 1) if the template call returns a non-200 status, so the
-    daily summary always reaches the recipient even if the template ID
-    is wrong or the phone hasn't opted in.
+    Uses httpx (available via the anthropic SDK dependency) instead of
+    urllib so that:
+      • Redirects are followed WITH the Authorization header preserved
+      • 4xx/5xx responses are not raised as exceptions — we read the body
+      • SSL certificate validation uses certifi's CA bundle
+
+    Strategy:
+      1. Template message (msgtype 3) — preferred; uses pre-approved HSM template
+      2. Plain-text message (msgtype 1) — fallback if template call fails
 
     Phone must be digits-only with country code, e.g. "919876543210".
     """
-    today_str    = datetime.now().strftime("%d/%m/%Y")
-    common_addr  = [{"seq": "1", "to": phone_clean, "from": _INFINITO_FROM, "tag": "CafeBuddy"}]
+    import httpx
+
+    today_str   = datetime.now().strftime("%d/%m/%Y")
+    auth_header = f"Bearer {_INFINITO_TOKEN}"
+    common_addr = [{"seq": "1", "to": phone_clean, "from": _INFINITO_FROM, "tag": "CafeBuddy"}]
 
     def _call(payload: dict) -> tuple[int, str]:
-        body = _json.dumps(payload).encode("utf-8")
-        req  = urllib.request.Request(
-            _INFINITO_URL, data=body,
-            headers={
-                "Content-Type":  "application/json",
-                "Authorization": f"Bearer {_INFINITO_TOKEN}",
-                "User-Agent":    "CafeBuddy/2.0",
-            },
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            return resp.status, resp.read().decode("utf-8", errors="ignore")
+        """POST payload; returns (status_code, response_body_text). Never raises."""
+        try:
+            with httpx.Client(timeout=20, follow_redirects=True) as client:
+                resp = client.post(
+                    _INFINITO_URL,
+                    json=payload,
+                    headers={
+                        "Authorization": auth_header,
+                        "Content-Type":  "application/json",
+                        "User-Agent":    "CafeBuddy/2.0",
+                    },
+                )
+                return resp.status_code, resp.text
+        except Exception as exc:
+            return 0, str(exc)
 
     # ── Attempt 1: WhatsApp template message (msgtype 3) ──────────────────────
     template_payload = {
         "apiver": "1.0",
         "whatsapp": {
             "ver": "2.0",
+            "dlr": {"url": ""},          # required field; blank = no delivery receipt
             "messages": [{
                 "coding":       1,
                 "id":           "1",
@@ -1330,22 +1341,23 @@ def _send_via_infinito(phone_clean: str, msg: str) -> dict:
         },
     }
 
-    try:
-        status, body = _call(template_payload)
-        if status == 200:
-            return {
-                "success":  True,
-                "message":  "WhatsApp template message sent via Infinito!",
-                "response": body[:300],
-            }
-    except Exception:
-        pass  # fall through to plain-text attempt
+    status, body = _call(template_payload)
+    if status == 200:
+        return {
+            "success":  True,
+            "message":  "WhatsApp template message sent via Infinito!",
+            "response": body[:300],
+        }
+
+    # Store reason so we can surface it if both attempts fail
+    attempt1_error = f"HTTP {status}: {body[:200]}" if status else body[:200]
 
     # ── Attempt 2: Plain-text message (msgtype 1) ─────────────────────────────
     text_payload = {
         "apiver": "1.0",
         "whatsapp": {
             "ver": "2.0",
+            "dlr": {"url": ""},
             "messages": [{
                 "coding":       1,
                 "id":           "1",
@@ -1360,20 +1372,24 @@ def _send_via_infinito(phone_clean: str, msg: str) -> dict:
         },
     }
 
-    try:
-        status, body = _call(text_payload)
-        if status == 200:
-            return {
-                "success":  True,
-                "message":  "WhatsApp message sent via Infinito!",
-                "response": body[:300],
-            }
+    status2, body2 = _call(text_payload)
+    if status2 == 200:
         return {
-            "success": False,
-            "message": f"Infinito returned HTTP {status}: {body[:200]}",
+            "success":  True,
+            "message":  "WhatsApp message sent via Infinito!",
+            "response": body2[:300],
         }
-    except Exception as exc:
-        return {"success": False, "message": str(exc)}
+
+    # Both failed — return combined error details for diagnosis
+    attempt2_error = f"HTTP {status2}: {body2[:200]}" if status2 else body2[:200]
+    return {
+        "success": False,
+        "message": (
+            f"Infinito send failed.\n"
+            f"Template (msgtype 3): {attempt1_error}\n"
+            f"Plain text (msgtype 1): {attempt2_error}"
+        ),
+    }
 
 
 @router.post("/notifications/whatsapp/send")

@@ -199,7 +199,7 @@ export default function WhatsAppNotifications() {
               </div>
               <div className="flex items-center gap-2">
                 <span className="w-2 h-2 rounded-full bg-amber-400 flex-shrink-0" />
-                <span className="text-amber-600 font-medium">Token valid until 30 Jul 2026</span>
+                <span className="text-amber-600 font-medium">Token valid until 30 Jun 2026</span>
               </div>
             </div>
           </div>
