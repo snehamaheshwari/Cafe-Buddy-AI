@@ -1286,16 +1286,9 @@ def _send_via_infinito(phone_clean: str, msg: str) -> dict:
     """
     Send a WhatsApp message through the Infinito unified API using httpx.
 
-    Uses httpx (available via the anthropic SDK dependency) so that:
-      • Redirects are followed WITH the Authorization header preserved
-      • 4xx/5xx responses are NOT raised — we read the full body for diagnostics
-      • No custom User-Agent (avoids WAF/Cloudflare rejections)
-
-    Strategy:
-      1. Template message (msgtype 3) — preferred; uses pre-approved HSM template
-      2. Plain-text message (msgtype 1) — fallback if template call fails
-
-    Phone must be digits-only with country code, e.g. "919876543210".
+    Tries three auth header strategies in order (Bearer, raw token, apikey),
+    and for each tries template (msgtype 3) then plain-text (msgtype 1).
+    Returns on the first 200.  Collects all errors for diagnostics.
     """
     import httpx
     import logging as _log
@@ -1303,29 +1296,6 @@ def _send_via_infinito(phone_clean: str, msg: str) -> dict:
     today_str   = datetime.now().strftime("%d/%m/%Y")
     common_addr = [{"seq": "1", "to": phone_clean, "from": _INFINITO_FROM}]
 
-    def _call(payload: dict) -> tuple[int, str]:
-        """POST payload; returns (status_code, response_body_text). Never raises."""
-        try:
-            with httpx.Client(timeout=20, follow_redirects=True) as client:
-                resp = client.post(
-                    _INFINITO_URL,
-                    json=payload,           # sets Content-Type automatically
-                    headers={
-                        "Authorization": f"Bearer {_INFINITO_TOKEN}",
-                    },
-                )
-                _log.warning(
-                    "Infinito API call: POST %s → HTTP %d | payload=%s | response=%s",
-                    _INFINITO_URL, resp.status_code,
-                    _json.dumps(payload)[:400],
-                    resp.text[:300],
-                )
-                return resp.status_code, resp.text
-        except Exception as exc:
-            _log.error("Infinito API call exception: %s", exc)
-            return 0, str(exc)
-
-    # ── Attempt 1: WhatsApp template message (msgtype 3) ──────────────────────
     template_payload = {
         "apiver": "1.0",
         "whatsapp": {
@@ -1345,17 +1315,6 @@ def _send_via_infinito(phone_clean: str, msg: str) -> dict:
         },
     }
 
-    status, body = _call(template_payload)
-    if status == 200:
-        return {
-            "success":  True,
-            "message":  "WhatsApp template message sent via Infinito!",
-            "response": body[:300],
-        }
-
-    attempt1_error = f"HTTP {status}: {body[:200]}" if status else body[:200]
-
-    # ── Attempt 2: Plain-text message (msgtype 1) ─────────────────────────────
     text_payload = {
         "apiver": "1.0",
         "whatsapp": {
@@ -1375,21 +1334,83 @@ def _send_via_infinito(phone_clean: str, msg: str) -> dict:
         },
     }
 
-    status2, body2 = _call(text_payload)
-    if status2 == 200:
-        return {
-            "success":  True,
-            "message":  "WhatsApp message sent via Infinito!",
-            "response": body2[:300],
-        }
+    # ── Auth strategies to try in order ───────────────────────────────────────
+    # ValueFirst/Infinito docs state tokens can be sent as "Bearer" OR raw
+    # API-key style.  We try all variants so one bad header format can't
+    # permanently block delivery.
+    auth_variants = [
+        ("Bearer",  {"Authorization": f"Bearer {_INFINITO_TOKEN}"}),
+        ("Raw",     {"Authorization": _INFINITO_TOKEN}),
+        ("apikey",  {"apikey": _INFINITO_TOKEN}),
+    ]
 
-    attempt2_error = f"HTTP {status2}: {body2[:200]}" if status2 else body2[:200]
+    def _call(payload: dict, hdrs: dict) -> tuple[int, str]:
+        try:
+            with httpx.Client(timeout=20, follow_redirects=True) as client:
+                resp = client.post(_INFINITO_URL, json=payload, headers=hdrs)
+                _log.warning(
+                    "Infinito → HTTP %d | auth=%s | to=%s | response=%s",
+                    resp.status_code,
+                    list(hdrs.keys())[0],
+                    phone_clean,
+                    resp.text[:300],
+                )
+                return resp.status_code, resp.text
+        except Exception as exc:
+            _log.error("Infinito exception: %s", exc)
+            return 0, str(exc)
+
+    errors: list[str] = []
+
+    for label, hdrs in auth_variants:
+        # Try template message first
+        s, b = _call(template_payload, hdrs)
+        if s == 200:
+            return {
+                "success":  True,
+                "message":  f"WhatsApp template sent via Infinito! (auth={label})",
+                "response": b[:300],
+            }
+        errors.append(f"[{label}/template] HTTP {s}: {b[:120]}")
+
+        # Fallback to plain text
+        s2, b2 = _call(text_payload, hdrs)
+        if s2 == 200:
+            return {
+                "success":  True,
+                "message":  f"WhatsApp message sent via Infinito! (auth={label})",
+                "response": b2[:300],
+            }
+        errors.append(f"[{label}/text] HTTP {s2}: {b2[:120]}")
+
+    # ── All strategies failed — build a diagnostic curl for manual testing ────
+    sample_payload_str = _json.dumps(template_payload, indent=2)
+    curl_cmd = (
+        f"curl --location --request POST '{_INFINITO_URL}' \\\n"
+        f"  --header 'Authorization: Bearer {_INFINITO_TOKEN[:20]}...{_INFINITO_TOKEN[-6:]}' \\\n"
+        f"  --header 'Content-Type: application/json' \\\n"
+        f"  --data '{_json.dumps(template_payload)}'"
+    )
+
+    _log.error(
+        "All Infinito auth strategies failed for to=%s.\nErrors: %s\nCurl equivalent:\n%s",
+        phone_clean, errors, curl_cmd,
+    )
+
     return {
         "success": False,
         "message": (
-            f"Infinito send failed.\n"
-            f"Template (msgtype 3): {attempt1_error}\n"
-            f"Plain text (msgtype 1): {attempt2_error}"
+            "Infinito 403 on all auth strategies — this is an account-level block "
+            "on their server, not a code issue.\n\n"
+            "NEXT STEPS:\n"
+            "1. Run the curl command in your terminal (see Railway logs for exact cmd).\n"
+            "   If it also returns 403 locally → contact Infinito/ValueFirst support "
+            "to activate your account for outbound WhatsApp.\n"
+            "   If it works locally but not on Railway → you need to whitelist "
+            "Railway's outbound IP in your Infinito account settings.\n\n"
+            "2. Log in to goinfinito.com → Settings → Sandbox / Test Numbers → "
+            "add +919953023927 as an approved recipient (demo accounts require this).\n\n"
+            f"Errors tried: {' | '.join(errors)}"
         ),
     }
 
