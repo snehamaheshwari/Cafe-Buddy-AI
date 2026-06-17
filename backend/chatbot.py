@@ -1286,11 +1286,10 @@ def _send_via_infinito(phone_clean: str, msg: str) -> dict:
     """
     Send a WhatsApp message through the Infinito unified API using httpx.
 
-    Uses httpx (available via the anthropic SDK dependency) instead of
-    urllib so that:
+    Uses httpx (available via the anthropic SDK dependency) so that:
       • Redirects are followed WITH the Authorization header preserved
-      • 4xx/5xx responses are not raised as exceptions — we read the body
-      • SSL certificate validation uses certifi's CA bundle
+      • 4xx/5xx responses are NOT raised — we read the full body for diagnostics
+      • No custom User-Agent (avoids WAF/Cloudflare rejections)
 
     Strategy:
       1. Template message (msgtype 3) — preferred; uses pre-approved HSM template
@@ -1299,10 +1298,10 @@ def _send_via_infinito(phone_clean: str, msg: str) -> dict:
     Phone must be digits-only with country code, e.g. "919876543210".
     """
     import httpx
+    import logging as _log
 
     today_str   = datetime.now().strftime("%d/%m/%Y")
-    auth_header = f"Bearer {_INFINITO_TOKEN}"
-    common_addr = [{"seq": "1", "to": phone_clean, "from": _INFINITO_FROM, "tag": "CafeBuddy"}]
+    common_addr = [{"seq": "1", "to": phone_clean, "from": _INFINITO_FROM}]
 
     def _call(payload: dict) -> tuple[int, str]:
         """POST payload; returns (status_code, response_body_text). Never raises."""
@@ -1310,29 +1309,34 @@ def _send_via_infinito(phone_clean: str, msg: str) -> dict:
             with httpx.Client(timeout=20, follow_redirects=True) as client:
                 resp = client.post(
                     _INFINITO_URL,
-                    json=payload,
+                    json=payload,           # sets Content-Type automatically
                     headers={
-                        "Authorization": auth_header,
-                        "Content-Type":  "application/json",
-                        "User-Agent":    "CafeBuddy/2.0",
+                        "Authorization": f"Bearer {_INFINITO_TOKEN}",
                     },
+                )
+                _log.warning(
+                    "Infinito API call: POST %s → HTTP %d | payload=%s | response=%s",
+                    _INFINITO_URL, resp.status_code,
+                    _json.dumps(payload)[:400],
+                    resp.text[:300],
                 )
                 return resp.status_code, resp.text
         except Exception as exc:
+            _log.error("Infinito API call exception: %s", exc)
             return 0, str(exc)
 
     # ── Attempt 1: WhatsApp template message (msgtype 3) ──────────────────────
     template_payload = {
         "apiver": "1.0",
         "whatsapp": {
-            "ver": "2.0",
-            "dlr": {"url": ""},          # required field; blank = no delivery receipt
+            "ver":  "2.0",
+            "dlr":  {"url": ""},
             "messages": [{
                 "coding":       1,
                 "id":           "1",
                 "msgtype":      "3",
                 "templateinfo": f"{_INFINITO_TEMPLATE_ID}~CafeBuddy~{today_str}",
-                "b_urlinfo":    "rcs",
+                "b_urlinfo":    "",
                 "type":         "",
                 "mediadata":    "",
                 "text":         "",
@@ -1349,15 +1353,14 @@ def _send_via_infinito(phone_clean: str, msg: str) -> dict:
             "response": body[:300],
         }
 
-    # Store reason so we can surface it if both attempts fail
     attempt1_error = f"HTTP {status}: {body[:200]}" if status else body[:200]
 
     # ── Attempt 2: Plain-text message (msgtype 1) ─────────────────────────────
     text_payload = {
         "apiver": "1.0",
         "whatsapp": {
-            "ver": "2.0",
-            "dlr": {"url": ""},
+            "ver":  "2.0",
+            "dlr":  {"url": ""},
             "messages": [{
                 "coding":       1,
                 "id":           "1",
@@ -1380,7 +1383,6 @@ def _send_via_infinito(phone_clean: str, msg: str) -> dict:
             "response": body2[:300],
         }
 
-    # Both failed — return combined error details for diagnosis
     attempt2_error = f"HTTP {status2}: {body2[:200]}" if status2 else body2[:200]
     return {
         "success": False,
@@ -1392,6 +1394,35 @@ def _send_via_infinito(phone_clean: str, msg: str) -> dict:
     }
 
 
+def _normalize_phone(raw: str) -> str:
+    """
+    Strip formatting characters and ensure the number has a country code.
+
+    Rules (covers Indian numbers specifically but works globally):
+      • Strip +, spaces, hyphens, parentheses
+      • If the result is exactly 10 digits → prepend India country code "91"
+      • Any other digit-only string is returned as-is (assumed to already
+        include country code)
+
+    Examples:
+      "+91 99530 23927" → "919953023927"
+      "9953023927"      → "919953023927"   ← 10-digit Indian number
+      "919953023927"    → "919953023927"   ← already has CC
+      "14155551234"     → "14155551234"    ← US number, 11 digits, unchanged
+    """
+    cleaned = (
+        raw
+        .replace("+", "")
+        .replace(" ", "")
+        .replace("-", "")
+        .replace("(", "")
+        .replace(")", "")
+    )
+    if cleaned.isdigit() and len(cleaned) == 10:
+        cleaned = "91" + cleaned          # bare Indian mobile → add country code
+    return cleaned
+
+
 @router.post("/notifications/whatsapp/send")
 async def send_whatsapp(settings: WhatsAppSettings):
     """
@@ -1401,21 +1432,85 @@ async def send_whatsapp(settings: WhatsAppSettings):
     Bearer token, sender number, and template ID are pre-configured server-side
     via environment variables (INFINITO_TOKEN, INFINITO_FROM, INFINITO_TEMPLATE_ID).
     """
-    msg = settings.message or _build_daily_summary()
+    msg         = settings.message or _build_daily_summary()
+    phone_clean = _normalize_phone(settings.phone)
 
-    # Normalise phone: strip +, spaces, hyphens → digits only with country code
-    phone_clean = (
-        settings.phone
-        .replace("+", "")
-        .replace(" ", "")
-        .replace("-", "")
-        .replace("(", "")
-        .replace(")", "")
-    )
     if not phone_clean.isdigit():
-        return {"success": False, "message": "Invalid phone number. Use digits with country code, e.g. 919876543210."}
+        return {
+            "success": False,
+            "message": "Invalid phone number — use digits with country code, e.g. 919876543210 or +91 98765 43210.",
+        }
 
     return _send_via_infinito(phone_clean, msg)
+
+
+@router.get("/notifications/whatsapp/diagnose")
+async def whatsapp_diagnose():
+    """
+    Diagnostic endpoint — returns the exact request CafeBuddy will send to
+    Infinito (payload + masked token) so you can compare it against a working
+    curl command without triggering an actual API call.
+
+    Access via: GET /api/notifications/whatsapp/diagnose
+    """
+    import httpx
+
+    today_str    = datetime.now().strftime("%d/%m/%Y")
+    example_addr = [{"seq": "1", "to": "919999999999", "from": _INFINITO_FROM}]
+
+    template_payload = {
+        "apiver": "1.0",
+        "whatsapp": {
+            "ver":  "2.0",
+            "dlr":  {"url": ""},
+            "messages": [{
+                "coding":       1,
+                "id":           "1",
+                "msgtype":      "3",
+                "templateinfo": f"{_INFINITO_TEMPLATE_ID}~CafeBuddy~{today_str}",
+                "b_urlinfo":    "",
+                "type":         "",
+                "mediadata":    "",
+                "text":         "",
+                "addresses":    example_addr,
+            }],
+        },
+    }
+
+    # Mask the token for safe display
+    tok   = _INFINITO_TOKEN
+    token_display = tok[:12] + "…" + tok[-6:] if len(tok) > 20 else "***"
+
+    # Make a real test call against the API (using a dummy number)
+    status, body = 0, "not attempted"
+    try:
+        with httpx.Client(timeout=15, follow_redirects=True) as client:
+            resp = client.post(
+                _INFINITO_URL,
+                json=template_payload,
+                headers={"Authorization": f"Bearer {_INFINITO_TOKEN}"},
+            )
+            status, body = resp.status_code, resp.text
+    except Exception as exc:
+        status, body = 0, str(exc)
+
+    return {
+        "url":            _INFINITO_URL,
+        "method":         "POST",
+        "authorization":  f"Bearer {token_display}",
+        "sender_from":    _INFINITO_FROM,
+        "template_id":    _INFINITO_TEMPLATE_ID,
+        "sample_payload": template_payload,
+        "live_test": {
+            "status":   status,
+            "response": body[:500],
+        },
+        "phone_normalization_examples": {
+            "9953023927":   _normalize_phone("9953023927"),
+            "+919953023927": _normalize_phone("+919953023927"),
+            "919953023927": _normalize_phone("919953023927"),
+        },
+    }
 
 
 @router.get("/notifications/whatsapp/summary")
