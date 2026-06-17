@@ -1215,18 +1215,26 @@ def upcoming_festivals(days: int = 90):
     return {"festivals": get_upcoming_festivals(days)}
 
 
-# ─── WhatsApp Notifications via Green API (free developer plan) ──────────────
-# Setup: https://green-api.com  → Register → Create instance → Scan QR with WhatsApp
+# ─── WhatsApp Notifications via Infinito (api.goinfinito.com) ────────────────
+# Provider: ValueFirst / Infinito  —  https://api.goinfinito.com/unified/v2/send
+# Token valid until 30 Jul 2026.  Override via env vars for production rotation.
 
 import json as _json
-import urllib.parse
 import urllib.request
 
+# ── Infinito configuration ───────────────────────────────────────────────────
+_INFINITO_URL         = "https://api.goinfinito.com/unified/v2/send"
+_INFINITO_TOKEN       = os.environ.get(
+    "INFINITO_TOKEN",
+    "eyJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJJbmZpbml0byIsImlhdCI6MTc4MTY3NTUwMCwic3ViIjoiRGVtb3NoazV0cmFpbmZzOWY3b2l2dDc2In0.xoy92pqdUS7tTKhM6Ow1rGDwLo8u5y5uek4k9f7kuXs",
+)
+_INFINITO_FROM        = os.environ.get("INFINITO_FROM",        "917428309250")
+_INFINITO_TEMPLATE_ID = os.environ.get("INFINITO_TEMPLATE_ID", "1755248")
+
+
 class WhatsAppSettings(BaseModel):
-    idInstance: str        # Green API instance ID  e.g. "1101234567"
-    apiTokenInstance: str  # Green API token from dashboard
-    phone: str             # Recipient phone  e.g. "+919876543210"
-    message: str = ""
+    phone:   str       # Recipient phone  e.g. "+919876543210" or "919876543210"
+    message: str = ""  # Optional custom message; omit to send the auto daily summary
 
 
 def _build_daily_summary() -> str:
@@ -1234,7 +1242,10 @@ def _build_daily_summary() -> str:
     from data_store import get_data, item_stats, platform_breakdown, daily_revenue
     data = get_data()
     if not data:
-        return "📊 *Cafe Buddy Daily Report*\n\nNo data uploaded yet. Visit your dashboard to upload POS data."
+        return (
+            "📊 *Cafe Buddy Daily Report*\n\n"
+            "No data uploaded yet. Visit your dashboard to upload POS data."
+        )
 
     today   = datetime.now().strftime("%Y-%m-%d")
     items   = item_stats(data)
@@ -1244,16 +1255,18 @@ def _build_daily_summary() -> str:
     total   = sum(r["revenue"] for r in data)
     dates   = sorted(set(r["date"] for r in data))
 
-    top_item = items[0]["name"] if items else "—"
-    top_plat = max(plats, key=lambda x: x["revenue"])["platform"] if plats else "—"
+    top_item  = items[0]["name"] if items else "—"
+    top_plat  = max(plats, key=lambda x: x["revenue"])["platform"] if plats else "—"
     today_rev = today_r["revenue"] if today_r else 0
 
     festivals = get_upcoming_festivals(7)
-    fest_line = f"\n🎉 *Coming soon*: {festivals[0]['name']} in {festivals[0]['days_away']} days" if festivals else ""
+    fest_line = (
+        f"\n🎉 *Coming soon*: {festivals[0]['name']} in {festivals[0]['days_away']} days"
+        if festivals else ""
+    )
 
-    # Action items from data
     avg_rev = total / max(len(dates), 1)
-    trend = "📈 Above avg" if today_rev > avg_rev else "📉 Below avg"
+    trend   = "📈 Above avg" if today_rev > avg_rev else "📉 Below avg"
 
     return (
         f"☕ *Cafe Buddy — Daily Summary*\n"
@@ -1270,36 +1283,126 @@ def _build_daily_summary() -> str:
     )
 
 
-@router.post("/notifications/whatsapp/send")
-async def send_whatsapp(settings: WhatsAppSettings):
-    """Send a WhatsApp message via Green API (free developer plan).
-    Setup at https://green-api.com — register, create instance, scan QR."""
-    msg = settings.message or _build_daily_summary()
-    try:
-        # Green API expects chatId in format: countrycode+number@c.us (no + sign)
-        phone_clean = settings.phone.replace("+", "").replace(" ", "").replace("-", "")
-        chat_id = f"{phone_clean}@c.us"
+def _send_via_infinito(phone_clean: str, msg: str) -> dict:
+    """
+    Send a WhatsApp message through the Infinito unified API.
 
-        url = (f"https://api.green-api.com"
-               f"/waInstance{settings.idInstance}"
-               f"/sendMessage/{settings.apiTokenInstance}")
+    Tries template message first (msgtype 3).  Falls back to plain-text
+    (msgtype 1) if the template call returns a non-200 status, so the
+    daily summary always reaches the recipient even if the template ID
+    is wrong or the phone hasn't opted in.
 
-        body = _json.dumps({"chatId": chat_id, "message": msg}).encode("utf-8")
-        req = urllib.request.Request(
-            url, data=body,
-            headers={"Content-Type": "application/json", "User-Agent": "CafeBuddy/2.0"},
-            method="POST"
+    Phone must be digits-only with country code, e.g. "919876543210".
+    """
+    today_str    = datetime.now().strftime("%d/%m/%Y")
+    common_addr  = [{"seq": "1", "to": phone_clean, "from": _INFINITO_FROM, "tag": "CafeBuddy"}]
+
+    def _call(payload: dict) -> tuple[int, str]:
+        body = _json.dumps(payload).encode("utf-8")
+        req  = urllib.request.Request(
+            _INFINITO_URL, data=body,
+            headers={
+                "Content-Type":  "application/json",
+                "Authorization": f"Bearer {_INFINITO_TOKEN}",
+                "User-Agent":    "CafeBuddy/2.0",
+            },
+            method="POST",
         )
         with urllib.request.urlopen(req, timeout=15) as resp:
-            response_body = resp.read().decode("utf-8", errors="ignore")
-        if resp.status == 200:
-            return {"success": True, "message": "WhatsApp message sent via Green API!", "response": response_body[:300]}
-        return {"success": False, "message": f"Green API returned HTTP {resp.status}: {response_body[:200]}"}
-    except Exception as e:
-        return {"success": False, "message": str(e)}
+            return resp.status, resp.read().decode("utf-8", errors="ignore")
+
+    # ── Attempt 1: WhatsApp template message (msgtype 3) ──────────────────────
+    template_payload = {
+        "apiver": "1.0",
+        "whatsapp": {
+            "ver": "2.0",
+            "messages": [{
+                "coding":       1,
+                "id":           "1",
+                "msgtype":      "3",
+                "templateinfo": f"{_INFINITO_TEMPLATE_ID}~CafeBuddy~{today_str}",
+                "b_urlinfo":    "rcs",
+                "type":         "",
+                "mediadata":    "",
+                "text":         "",
+                "addresses":    common_addr,
+            }],
+        },
+    }
+
+    try:
+        status, body = _call(template_payload)
+        if status == 200:
+            return {
+                "success":  True,
+                "message":  "WhatsApp template message sent via Infinito!",
+                "response": body[:300],
+            }
+    except Exception:
+        pass  # fall through to plain-text attempt
+
+    # ── Attempt 2: Plain-text message (msgtype 1) ─────────────────────────────
+    text_payload = {
+        "apiver": "1.0",
+        "whatsapp": {
+            "ver": "2.0",
+            "messages": [{
+                "coding":       1,
+                "id":           "1",
+                "msgtype":      "1",
+                "templateinfo": "",
+                "b_urlinfo":    "",
+                "type":         "",
+                "mediadata":    "",
+                "text":         msg,
+                "addresses":    common_addr,
+            }],
+        },
+    }
+
+    try:
+        status, body = _call(text_payload)
+        if status == 200:
+            return {
+                "success":  True,
+                "message":  "WhatsApp message sent via Infinito!",
+                "response": body[:300],
+            }
+        return {
+            "success": False,
+            "message": f"Infinito returned HTTP {status}: {body[:200]}",
+        }
+    except Exception as exc:
+        return {"success": False, "message": str(exc)}
+
+
+@router.post("/notifications/whatsapp/send")
+async def send_whatsapp(settings: WhatsAppSettings):
+    """
+    Send a WhatsApp notification via Infinito (api.goinfinito.com).
+
+    The recipient phone number is the only required field from the frontend.
+    Bearer token, sender number, and template ID are pre-configured server-side
+    via environment variables (INFINITO_TOKEN, INFINITO_FROM, INFINITO_TEMPLATE_ID).
+    """
+    msg = settings.message or _build_daily_summary()
+
+    # Normalise phone: strip +, spaces, hyphens → digits only with country code
+    phone_clean = (
+        settings.phone
+        .replace("+", "")
+        .replace(" ", "")
+        .replace("-", "")
+        .replace("(", "")
+        .replace(")", "")
+    )
+    if not phone_clean.isdigit():
+        return {"success": False, "message": "Invalid phone number. Use digits with country code, e.g. 919876543210."}
+
+    return _send_via_infinito(phone_clean, msg)
 
 
 @router.get("/notifications/whatsapp/summary")
 def get_whatsapp_summary():
-    """Preview the message that would be sent as a WhatsApp notification."""
+    """Preview the daily summary message that would be sent via WhatsApp."""
     return {"preview": _build_daily_summary()}

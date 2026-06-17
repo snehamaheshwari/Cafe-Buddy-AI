@@ -170,7 +170,11 @@ export const api = {
     kpis:              () => get('/layer5/kpis'),
   },
   notifications: {
-    sendWhatsApp: (body: { idInstance: string; apiTokenInstance: string; phone: string; message?: string }) =>
+    /**
+     * Send a WhatsApp alert via Infinito (api.goinfinito.com).
+     * Only `phone` is required — token/sender are configured server-side.
+     */
+    sendWhatsApp: (body: { phone: string; message?: string }) =>
       post('/notifications/whatsapp/send', body),
     getSummary: () => get<{ preview: string }>('/notifications/whatsapp/summary'),
   },
