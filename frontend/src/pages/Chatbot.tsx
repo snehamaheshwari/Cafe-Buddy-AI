@@ -5,6 +5,7 @@ import {
   LayoutGrid, X, PlusCircle, AlertCircle, Pencil, MessageCircle,
 } from 'lucide-react'
 import Header from '../components/Header'
+import { authHeaders } from '../lib/api'
 
 const STORAGE_KEY = 'cafebuddy_chat_v2'
 
@@ -187,7 +188,7 @@ export default function Chatbot() {
     try {
       const res = await fetch('/api/chatbot/ask', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({ message: text, history }),
       })
       if (!res.ok) throw new Error(`Server error ${res.status}`)

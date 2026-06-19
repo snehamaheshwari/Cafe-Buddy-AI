@@ -302,7 +302,7 @@ async def _stream_claude(history: list, message: str,
     msgs.append({"role": "user", "content": message})
 
     with _ai_client.messages.stream(
-        model="claude-3-5-haiku-20241022",
+        model="claude-haiku-4-5-20251001",
         max_tokens=1024,
         system=system_msg,
         messages=msgs,
@@ -1101,8 +1101,12 @@ async def chatbot_stream(req: ChatRequest, request: Request = None):
                 friendly = "The server is temporarily busy. Please try again in a moment."
             elif "api_key" in err_msg.lower() or "authentication" in err_msg.lower():
                 friendly = "AI service authentication error. Check your ANTHROPIC_API_KEY in Railway Variables."
+            elif "model" in err_msg.lower() and ("not found" in err_msg.lower() or "invalid" in err_msg.lower()):
+                friendly = "AI model error — the configured model may be unavailable. Check Railway logs."
             else:
-                friendly = "Something went wrong processing your request. Please try again."
+                import logging as _log
+                _log.error("Chatbot stream exception: %s", err_msg)
+                friendly = f"Something went wrong: {err_msg[:200]}"
             yield f"data: {json.dumps({'text': friendly})}\n\n"
             yield f"data: {json.dumps({'done': True, 'sources': {}})}\n\n"
 
@@ -1194,7 +1198,9 @@ async def chatbot_ask(req: ChatRequest, request: Request = None):
                 "festivals": bool(festivals),
             }
     except Exception as e:
-        full_text = "Something went wrong processing your request. Please try again."
+        import logging as _log
+        _log.error("chatbot_ask exception: %s", str(e))
+        full_text = f"Error: {str(e)[:300]}"
         sources   = {}
 
     return {"text": full_text, "sources": sources}
@@ -1205,7 +1211,7 @@ def chatbot_status():
     return {
         "ai_mode":     HAS_AI,
         "web_search":  HAS_DDG,
-        "model":       "claude-3-5-haiku-20241022" if HAS_AI else "Smart Analytics Engine",
+        "model":       "claude-haiku-4-5-20251001" if HAS_AI else "Smart Analytics Engine",
         "api_key_set": bool(ANTHROPIC_KEY),
     }
 

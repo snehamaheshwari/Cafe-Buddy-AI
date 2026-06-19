@@ -1221,7 +1221,7 @@ def live_search_competitors(city: str, area: str) -> list[dict]:
 
 def analyze_with_ai(our_cafe_stats: dict, competitors: list[dict], city: str, area: str) -> dict:
     """
-    Call the Anthropic API (claude-3-5-haiku-20241022) to analyse the competitive landscape
+    Call the Anthropic API (claude-haiku-4-5-20251001) to analyse the competitive landscape
     and return structured insights.
     """
     try:
@@ -1239,7 +1239,7 @@ def analyze_with_ai(our_cafe_stats: dict, competitors: list[dict], city: str, ar
                     "4. Railway will auto-redeploy with the key active.\n\n"
                     "Your Anthropic API key can be found at console.anthropic.com"
                 ),
-                "model": "claude-3-5-haiku-20241022",
+                "model": "claude-haiku-4-5-20251001",
                 "status": "error",
             }
         client = anthropic.Anthropic(api_key=api_key)
@@ -1292,7 +1292,7 @@ Provide a concise, actionable analysis covering exactly these four sections:
 Keep the analysis practical, data-driven, and specific to {area}, {city}. Use â‚¹ for prices."""
 
         message = client.messages.create(
-            model="claude-3-5-haiku-20241022",
+            model="claude-haiku-4-5-20251001",
             max_tokens=800,
             messages=[{"role": "user", "content": prompt}],
         )
@@ -1300,7 +1300,7 @@ Keep the analysis practical, data-driven, and specific to {area}, {city}. Use â‚
         analysis_text = message.content[0].text if message.content else "No analysis generated."
         return {
             "analysis": analysis_text,
-            "model": "claude-3-5-haiku-20241022",
+            "model": "claude-haiku-4-5-20251001",
             "status": "success",
         }
 
@@ -1316,10 +1316,10 @@ Keep the analysis practical, data-driven, and specific to {area}, {city}. Use â‚
                 "3. Come back and click **Run AI Analysis** again\n\n"
                 "Your API key is correctly set â€” this is purely a billing issue."
             )
-            return {"analysis": friendly, "model": "claude-3-5-haiku-20241022", "status": "billing_error"}
+            return {"analysis": friendly, "model": "claude-haiku-4-5-20251001", "status": "billing_error"}
         return {
             "analysis": f"AI analysis unavailable: {exc}",
-            "model": "claude-3-5-haiku-20241022",
+            "model": "claude-haiku-4-5-20251001",
             "status": "error",
         }
 

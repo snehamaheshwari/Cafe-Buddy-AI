@@ -413,18 +413,19 @@
     <div class="grid-3">
 
       <div class="card">
-        <div class="card-title"><span class="icon">🔐</span> Auth &amp; Access Control</div>
+        <div class="card-title"><span class="icon">🔐</span> Auth &amp; Multi-Tenant Access</div>
         <ul class="items">
-          <li><b>AuthContext</b> — session state + <code>/api/auth/me</code> polling on every tab focus</li>
+          <li><b>JWT Bearer tokens</b> — embed username + tenant_id + role_id</li>
+          <li><b>AuthContext</b> — session state + <code>/api/auth/me</code> polling on tab focus</li>
           <li><b>PermissionRoute</b> — RBAC gate wrapping every page route</li>
-          <li><b>apiFetch.ts</b> — injects X-Username + X-Role on every request</li>
+          <li><b>authHeaders()</b> — injects Authorization + X-Username on every request</li>
           <li>3 system roles: <b>admin</b> / <b>sub_admin</b> / <b>viewer</b> + custom roles</li>
-          <li>Session stored in localStorage as <code>{username, role, permissions[]}</code></li>
+          <li>Per-tenant role store — each workspace has isolated RBAC</li>
         </ul>
       </div>
 
       <div class="card">
-        <div class="card-title"><span class="icon">📱</span> 11 Role-Gated Pages</div>
+        <div class="card-title"><span class="icon">📱</span> 12 Role-Gated Pages</div>
         <ul class="items">
           <li><b>Dashboard</b> — KPIs, forecast chart, platform split</li>
           <li><b>Upload My Data</b> — 5-section upload + template download</li>
@@ -432,9 +433,10 @@
           <li><b>Smart Analytics</b> — 7 ML model sections</li>
           <li><b>What To Do Next</b> — approve / reject decisions</li>
           <li><b>AI-Powered Execution</b> — approved action feed</li>
-          <li><b>Ask Cafe Buddy</b> — streaming AI chat</li>
+          <li><b>Ask Cafe Buddy</b> — AI chat (Claude Haiku 4.5)</li>
           <li><b>Market Radar</b> — competitor radar chart</li>
           <li><b>WhatsApp Alerts</b> · <b>Role Mgmt</b> · <b>Audit Log</b></li>
+          <li><b>Workspace Admin</b> — system-only tenant management</li>
         </ul>
       </div>
 
@@ -501,9 +503,10 @@
       <div class="card">
         <div class="card-title"><span class="icon">🛡️</span> System Services</div>
         <ul class="items">
-          <li><b>role_store.py</b> — RBAC roles, users, permissions</li>
+          <li><b>tenant_store.py</b> — multi-tenant registry, create/delete workspaces</li>
+          <li><b>role_store.py</b> — per-tenant RBAC roles, users, permissions</li>
+          <li><b>auth_utils.py</b> — JWT creation, tenant_id extraction</li>
           <li><b>audit_store.py</b> — event log, CSV export</li>
-          <li><b>cafe_os_models.py</b> — CafeOS decision models</li>
           <li><b>peer_comparison.py</b> — competitor DB (100+ cafés)</li>
           <li>10 Indian cities · 30+ areas · live DDG search</li>
         </ul>
@@ -599,11 +602,11 @@
 
         <div class="ext-card">
           <div class="ext-card-title">🤖 Anthropic Claude API</div>
-          <div class="ext-card-sub">claude-3-haiku · Streaming SSE</div>
+          <div class="ext-card-sub">claude-haiku-4-5-20251001 · Streaming SSE</div>
           <ul class="items">
             <li>AI Chatbot — context-aware</li>
             <li>Market Radar analysis</li>
-            <li>Fallback: smart analytics</li>
+            <li>Fallback: smart analytics engine</li>
             <li>Auth: ANTHROPIC_API_KEY env var</li>
           </ul>
         </div>
@@ -619,12 +622,13 @@
         </div>
 
         <div class="ext-card">
-          <div class="ext-card-title">📱 Green API (WhatsApp)</div>
-          <div class="ext-card-sub">User-provided credentials</div>
+          <div class="ext-card-title">📲 Infinito (ValueFirst) WhatsApp</div>
+          <div class="ext-card-sub">api.goinfinito.com · Bearer JWT · httpx</div>
           <ul class="items">
             <li>Daily revenue digest</li>
-            <li>Low-stock alerts</li>
-            <li>Peak hour reminders</li>
+            <li>Template (HSM) + plain-text fallback</li>
+            <li>Sender: +91 74283 09250</li>
+            <li>Env: INFINITO_TOKEN / INFINITO_FROM</li>
           </ul>
         </div>
       </div><!-- /ext-panel -->
@@ -720,12 +724,11 @@
         <div class="pipe-card-title"><span>💽</span> Railway Volume</div>
         <div class="pipe-card-sub">/app/backend/data</div>
         <ul class="items">
-          <li><b>pos.json</b> — uploaded POS rows</li>
-          <li><b>menu.json</b> — menu catalogue</li>
-          <li><b>financial.json</b> — financial data</li>
-          <li><b>customer.json</b> — CRM data</li>
-          <li><b>reviews.json</b> — review data</li>
-          <li><b>roles.json</b> — RBAC users &amp; roles</li>
+          <li><b>tenants.json</b> — workspace registry (create/delete)</li>
+          <li><b>data/{tenant_id}/</b> — per-tenant isolated directory</li>
+          <li><b>pos.json</b> · <b>financial.json</b> · <b>menu.json</b></li>
+          <li><b>customer.json</b> · <b>reviews.json</b> (per tenant)</li>
+          <li><b>roles.json</b> — per-tenant RBAC users &amp; roles</li>
           <li><b>audit_log.json</b> — full audit trail</li>
           <li>Persists across ALL deployments</li>
         </ul>
