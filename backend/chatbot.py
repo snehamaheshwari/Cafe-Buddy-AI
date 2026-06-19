@@ -1,8 +1,9 @@
 """
 Cafe Buddy Chatbot — streaming AI responses with web search + festival calendar.
-Works in two modes:
-  1. AI mode   — full Claude-powered, if ANTHROPIC_API_KEY env var is set
-  2. Smart mode— analytics-based engine (no API key needed)
+Works in three modes (tried in order):
+  1. Anthropic Claude — if ANTHROPIC_API_KEY is set and has credits
+  2. Groq (free)      — if GROQ_API_KEY is set (Llama 3.3 70B, 14k req/day free)
+  3. Smart Analytics  — pure Python analytics engine, no API key needed
 """
 from __future__ import annotations
 
@@ -28,6 +29,9 @@ router = APIRouter()
 # ─── Env / optional deps ─────────────────────────────────────────────────────
 
 ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
+_GROQ_API_KEY  = os.getenv("GROQ_API_KEY", "").strip()
+_GROQ_URL      = "https://api.groq.com/openai/v1/chat/completions"
+_GROQ_MODEL    = "llama-3.3-70b-versatile"   # free tier; 14,400 req/day
 
 try:
     import anthropic as _anthropic
@@ -36,6 +40,8 @@ try:
 except ImportError:
     _ai_client = None
     HAS_AI = False
+
+HAS_GROQ = bool(_GROQ_API_KEY)
 
 try:
     from duckduckgo_search import DDGS as _DDGS
@@ -274,11 +280,9 @@ _SYSTEM_PROMPT = """You are Cafe Buddy AI — a sharp, data-driven assistant for
 """
 
 
-async def _stream_claude(history: list, message: str,
-                         context: str, search: list, festivals: list,
-                         ml_context: str = ""):
-    ml_txt = ml_context if ml_context else ""
-
+def _build_system_msg(context: str, search: list, festivals: list,
+                      ml_context: str = "") -> str:
+    """Assemble the system prompt from café context, web results, festivals."""
     fest_txt = ""
     if festivals:
         fest_txt = "── UPCOMING FESTIVALS ─────────────────────────────────────\n"
@@ -293,11 +297,26 @@ async def _stream_claude(history: list, message: str,
         for r in search[:3]:
             web_txt += f"• {r['title']}\n  {r['body'][:300]}\n"
 
-    system_msg = (f"{_SYSTEM_PROMPT}\n\n"
-                  f"{ml_txt}\n\n"
-                  f"CONTEXT:\n{context}\n\n"
-                  f"{fest_txt}\n{web_txt}")
+    return (f"{_SYSTEM_PROMPT}\n\n"
+            f"{ml_context}\n\n"
+            f"CONTEXT:\n{context}\n\n"
+            f"{fest_txt}\n{web_txt}")
 
+
+def _sources(context: str, search: list, festivals: list) -> dict:
+    return {
+        "data":      bool(context and "no sales data" not in context.lower()),
+        "web":       bool(search),
+        "festivals": bool(festivals),
+    }
+
+
+# ─── Anthropic Claude streaming ───────────────────────────────────────────────
+
+async def _stream_claude(history: list, message: str,
+                         context: str, search: list, festivals: list,
+                         ml_context: str = ""):
+    system_msg = _build_system_msg(context, search, festivals, ml_context)
     msgs = [{"role": m["role"], "content": m["content"]} for m in history[-12:]]
     msgs.append({"role": "user", "content": message})
 
@@ -310,13 +329,47 @@ async def _stream_claude(history: list, message: str,
         for text in stream.text_stream:
             yield f"data: {json.dumps({'text': text})}\n\n"
 
-    # Send source metadata at end
-    sources = {
-        "data": bool(context and "no sales data" not in context.lower()),
-        "web":  bool(search),
-        "festivals": bool(festivals),
-    }
-    yield f"data: {json.dumps({'done': True, 'sources': sources})}\n\n"
+    yield f"data: {json.dumps({'done': True, 'sources': _sources(context, search, festivals)})}\n\n"
+
+
+# ─── Groq (free) streaming ────────────────────────────────────────────────────
+
+async def _stream_groq(history: list, message: str,
+                       context: str, search: list, festivals: list,
+                       ml_context: str = ""):
+    """
+    Stream from Groq's OpenAI-compatible API using httpx (already available).
+    Model: llama-3.3-70b-versatile — free tier, 14,400 requests/day.
+    Sign up free at https://console.groq.com
+    """
+    import httpx
+
+    system_msg = _build_system_msg(context, search, festivals, ml_context)
+    msgs = [{"role": "system", "content": system_msg}]
+    msgs += [{"role": m["role"], "content": m["content"]} for m in history[-12:]]
+    msgs.append({"role": "user", "content": message})
+
+    async with httpx.AsyncClient(timeout=60) as client:
+        async with client.stream(
+            "POST",
+            _GROQ_URL,
+            json={"model": _GROQ_MODEL, "messages": msgs, "max_tokens": 1024, "stream": True},
+            headers={"Authorization": f"Bearer {_GROQ_API_KEY}", "Content-Type": "application/json"},
+        ) as resp:
+            async for line in resp.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+                raw = line[6:].strip()
+                if raw == "[DONE]":
+                    break
+                try:
+                    delta = json.loads(raw)["choices"][0]["delta"].get("content", "")
+                    if delta:
+                        yield f"data: {json.dumps({'text': delta})}\n\n"
+                except (json.JSONDecodeError, KeyError, IndexError):
+                    pass
+
+    yield f"data: {json.dumps({'done': True, 'sources': _sources(context, search, festivals)})}\n\n"
 
 # ─── Smart analytics fallback (no API key needed) ────────────────────────────
 
@@ -1073,40 +1126,59 @@ async def chatbot_stream(req: ChatRequest, request: Request = None):
         except asyncio.TimeoutError:
             search_res = []
 
+    history_dicts = [m.model_dump() for m in req.history]
+
     async def generate():
+        # ── Provider cascade: Anthropic → Groq → Smart Analytics ──────────────
         try:
             if HAS_AI:
-                async for chunk in _stream_claude(
-                    [m.model_dump() for m in req.history],
-                    req.message, context, search_res, festivals,
+                try:
+                    async for chunk in _stream_claude(
+                        history_dicts, req.message, context, search_res, festivals,
+                        ml_context=ml_context
+                    ):
+                        yield chunk
+                    return
+                except Exception as claude_err:
+                    err_lower = str(claude_err).lower()
+                    is_billing = ("credit" in err_lower or "balance" in err_lower
+                                  or ("billing" in err_lower and "upgrade" in err_lower))
+                    if is_billing and HAS_GROQ:
+                        # Anthropic out of credits → silently switch to Groq
+                        import logging as _log
+                        _log.warning("Anthropic billing exhausted — falling back to Groq")
+                    elif not is_billing:
+                        raise  # non-billing error: surface it
+
+            if HAS_GROQ:
+                async for chunk in _stream_groq(
+                    history_dicts, req.message, context, search_res, festivals,
                     ml_context=ml_context
                 ):
                     yield chunk
-            else:
-                response = _smart_response(req.message, data, festivals, search_res, ml_context=ml_context)
-                async for chunk in _stream_text(response):
-                    yield chunk
+                return
+
+            # ── Pure analytics fallback ────────────────────────────────────────
+            response = _smart_response(req.message, data, festivals, search_res, ml_context=ml_context)
+            async for chunk in _stream_text(response):
+                yield chunk
+
         except Exception as e:
+            import logging as _log
             err_msg = str(e)
-            # Surface a clean message instead of raw exception text
-            if "credit balance" in err_msg.lower() or ("billing" in err_msg.lower() and "upgrade" in err_msg.lower()):
+            _log.error("Chatbot stream exception: %s", err_msg)
+            err_lower = err_msg.lower()
+            if "credit" in err_lower or "balance" in err_lower:
                 friendly = (
                     "⚠️ **Anthropic account has no credits.**\n\n"
-                    "Your API key is valid, but the account balance is zero.\n\n"
-                    "**Fix:** Go to [console.anthropic.com](https://console.anthropic.com) → "
-                    "Plans & Billing → Add Credits (minimum $5).\n\n"
-                    "The chatbot will work again immediately after credits are added."
+                    "Add credits at console.anthropic.com → Plans & Billing, "
+                    "**or** set a free **GROQ_API_KEY** in Railway Variables "
+                    "(sign up free at console.groq.com — 14,400 requests/day)."
                 )
-            elif "502" in err_msg or "503" in err_msg or "timeout" in err_msg.lower():
+            elif "502" in err_msg or "503" in err_msg or "timeout" in err_lower:
                 friendly = "The server is temporarily busy. Please try again in a moment."
-            elif "api_key" in err_msg.lower() or "authentication" in err_msg.lower():
-                friendly = "AI service authentication error. Check your ANTHROPIC_API_KEY in Railway Variables."
-            elif "model" in err_msg.lower() and ("not found" in err_msg.lower() or "invalid" in err_msg.lower()):
-                friendly = "AI model error — the configured model may be unavailable. Check Railway logs."
             else:
-                import logging as _log
-                _log.error("Chatbot stream exception: %s", err_msg)
-                friendly = f"Something went wrong: {err_msg[:200]}"
+                friendly = f"AI error: {err_msg[:200]}"
             yield f"data: {json.dumps({'text': friendly})}\n\n"
             yield f"data: {json.dumps({'done': True, 'sources': {}})}\n\n"
 
@@ -1168,51 +1240,89 @@ async def chatbot_ask(req: ChatRequest, request: Request = None):
         except Exception:
             search_res = []
 
+    history_dicts = [m.model_dump() for m in req.history]
+
+    async def _collect(stream_gen):
+        """Collect SSE chunks from a stream generator into (text, sources)."""
+        text = ""
+        sources: dict = {}
+        async for chunk in stream_gen:
+            raw = chunk.replace("data: ", "").strip()
+            if not raw:
+                continue
+            try:
+                parsed = json.loads(raw)
+                if parsed.get("done"):
+                    sources = parsed.get("sources", {})
+                elif parsed.get("text"):
+                    text += parsed["text"]
+            except Exception:
+                pass
+        return text, sources
+
+    full_text = ""
+    sources: dict = {}
     try:
         if HAS_AI:
-            # Collect the full streamed response into one string
-            full_text = ""
-            sources: dict = {}
-            async for chunk in _stream_claude(
-                [m.model_dump() for m in req.history],
-                req.message, context, search_res, festivals,
-                ml_context=ml_context
-            ):
-                # Parse SSE chunks from _stream_claude
-                raw = chunk.replace("data: ", "").strip()
-                if not raw:
-                    continue
-                try:
-                    parsed = json.loads(raw)
-                    if parsed.get("done"):
-                        sources = parsed.get("sources", {})
-                    elif parsed.get("text"):
-                        full_text += parsed["text"]
-                except Exception:
-                    pass
-        else:
+            try:
+                full_text, sources = await _collect(
+                    _stream_claude(history_dicts, req.message, context, search_res, festivals,
+                                   ml_context=ml_context)
+                )
+            except Exception as claude_err:
+                err_lower = str(claude_err).lower()
+                is_billing = ("credit" in err_lower or "balance" in err_lower
+                              or ("billing" in err_lower and "upgrade" in err_lower))
+                if is_billing and HAS_GROQ:
+                    import logging as _log
+                    _log.warning("Anthropic billing exhausted — falling back to Groq (ask)")
+                    full_text, sources = await _collect(
+                        _stream_groq(history_dicts, req.message, context, search_res, festivals,
+                                     ml_context=ml_context)
+                    )
+                else:
+                    raise
+
+        if not full_text and HAS_GROQ:
+            full_text, sources = await _collect(
+                _stream_groq(history_dicts, req.message, context, search_res, festivals,
+                             ml_context=ml_context)
+            )
+
+        if not full_text:
             full_text = _smart_response(req.message, data, festivals, search_res, ml_context=ml_context)
-            sources   = {
-                "data": bool(data),
-                "web":  bool(search_res),
+            sources = {
+                "data":      bool(data),
+                "web":       bool(search_res),
                 "festivals": bool(festivals),
             }
     except Exception as e:
         import logging as _log
         _log.error("chatbot_ask exception: %s", str(e))
         full_text = f"Error: {str(e)[:300]}"
-        sources   = {}
+        sources = {}
 
     return {"text": full_text, "sources": sources}
 
 
 @router.get("/chatbot/status")
 def chatbot_status():
+    if HAS_AI:
+        model = "claude-haiku-4-5-20251001"
+        provider = "Anthropic"
+    elif HAS_GROQ:
+        model = _GROQ_MODEL
+        provider = "Groq (free)"
+    else:
+        model = "Smart Analytics Engine"
+        provider = "Built-in"
     return {
-        "ai_mode":     HAS_AI,
-        "web_search":  HAS_DDG,
-        "model":       "claude-haiku-4-5-20251001" if HAS_AI else "Smart Analytics Engine",
-        "api_key_set": bool(ANTHROPIC_KEY),
+        "ai_mode":          HAS_AI or HAS_GROQ,
+        "web_search":       HAS_DDG,
+        "model":            model,
+        "provider":         provider,
+        "anthropic_key":    bool(ANTHROPIC_KEY),
+        "groq_key":         bool(_GROQ_API_KEY),
     }
 
 
