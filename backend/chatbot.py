@@ -194,9 +194,13 @@ def _build_context(data: list) -> str:
     total_rev   = sum(r["revenue"] for r in data)
     total_cost  = sum(r["cost"]    for r in data)
 
-    cutoff_7d   = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
-    last_7d     = [r for r in data if r["date"] >= cutoff_7d]
-    items_7d    = item_stats(last_7d)
+    # Anchor to the latest date IN the dataset so historical uploads still
+    # show meaningful "last 7 days" data rather than "(no data in last 7 days)".
+    _all_dates  = sorted(r["date"] for r in data if r.get("date"))
+    _data_anchor = _all_dates[-1] if _all_dates else datetime.now().strftime("%Y-%m-%d")
+    cutoff_7d   = (datetime.strptime(_data_anchor, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
+    last_7d     = [r for r in data if r.get("date", "") >= cutoff_7d]
+    items_7d    = item_stats(last_7d) if last_7d else item_stats(data)  # fallback to all data
 
     weekend_rev, weekend_days = 0.0, set()
     weekday_rev, weekday_days = 0.0, set()
@@ -675,9 +679,20 @@ def _smart_response(message: str, data: list, festivals: list, search_res: list 
 
         top = item_stats(period_data)
         if not top:
-            return (f"No sales records found for {period_label}. "
-                    f"The uploaded POS data covers dates up to **{anchor_fmt}**. "
-                    f"Upload a more recent POS file to query current week data.")
+            # No data in the requested window — fall back to latest available 7 days
+            all_sorted = sorted(set(r.get("date", "") for r in data if r.get("date")))
+            if all_sorted:
+                fallback_anchor = datetime.strptime(all_sorted[-1], "%Y-%m-%d")
+                fallback_cut    = (fallback_anchor - timedelta(days=7)).strftime("%Y-%m-%d")
+                period_data     = [r for r in data if r.get("date", "") >= fallback_cut]
+                period_label    = f"latest 7 days up to {fallback_anchor.strftime('%d %b %Y')} (most recent in uploaded data)"
+                top             = item_stats(period_data) or item_stats(data)
+                if not period_data:
+                    top          = item_stats(data)
+                    period_label = "all uploaded data"
+            else:
+                top          = item_stats(data)
+                period_label = "all uploaded data"
         lines = [f"**Top selling items — {period_label}:**\n"]
         for i, x in enumerate(top[:3]):
             lines.append(f"{i+1}. **{x['name']}** — ₹{x['revenue']:,.0f} revenue, "
@@ -1410,19 +1425,20 @@ def _send_via_infinito(phone_clean: str, msg: str) -> dict:
     import logging as _log
 
     today_str   = datetime.now().strftime("%d/%m/%Y")
-    common_addr = [{"seq": "1", "to": phone_clean, "from": _INFINITO_FROM}]
+    _DLR_URL    = "https://webhook.site/cc84d70e-658a-41e3-851d-1207efef4168?To=%p&From=%P&REASON_CODE=%2&GUID=%5"
+    common_addr = [{"seq": "1", "to": phone_clean, "from": _INFINITO_FROM, "tag": "Test1"}]
 
     template_payload = {
         "apiver": "1.0",
         "whatsapp": {
-            "ver":  "2.0",
-            "dlr":  {"url": ""},
+            "ver": "2.0",
+            "dlr": {"url": _DLR_URL},
             "messages": [{
                 "coding":       1,
-                "id":           "1",
+                "id":           "11",
                 "msgtype":      "3",
-                "templateinfo": f"{_INFINITO_TEMPLATE_ID}~CafeBuddy~{today_str}",
-                "b_urlinfo":    "",
+                "templateinfo": f"{_INFINITO_TEMPLATE_ID}~Car~{today_str}",
+                "b_urlinfo":    "#/renew-policy",
                 "type":         "",
                 "mediadata":    "",
                 "text":         "",
@@ -1434,11 +1450,11 @@ def _send_via_infinito(phone_clean: str, msg: str) -> dict:
     text_payload = {
         "apiver": "1.0",
         "whatsapp": {
-            "ver":  "2.0",
-            "dlr":  {"url": ""},
+            "ver": "2.0",
+            "dlr": {"url": _DLR_URL},
             "messages": [{
                 "coding":       1,
-                "id":           "1",
+                "id":           "11",
                 "msgtype":      "1",
                 "templateinfo": "",
                 "b_urlinfo":    "",
@@ -1593,19 +1609,20 @@ async def whatsapp_diagnose():
     import httpx
 
     today_str    = datetime.now().strftime("%d/%m/%Y")
-    example_addr = [{"seq": "1", "to": "919999999999", "from": _INFINITO_FROM}]
+    _DLR_URL_D   = "https://webhook.site/cc84d70e-658a-41e3-851d-1207efef4168?To=%p&From=%P&REASON_CODE=%2&GUID=%5"
+    example_addr = [{"seq": "1", "to": "919999999999", "from": _INFINITO_FROM, "tag": "Test1"}]
 
     template_payload = {
         "apiver": "1.0",
         "whatsapp": {
-            "ver":  "2.0",
-            "dlr":  {"url": ""},
+            "ver": "2.0",
+            "dlr": {"url": _DLR_URL_D},
             "messages": [{
                 "coding":       1,
-                "id":           "1",
+                "id":           "11",
                 "msgtype":      "3",
-                "templateinfo": f"{_INFINITO_TEMPLATE_ID}~CafeBuddy~{today_str}",
-                "b_urlinfo":    "",
+                "templateinfo": f"{_INFINITO_TEMPLATE_ID}~Car~{today_str}",
+                "b_urlinfo":    "#/renew-policy",
                 "type":         "",
                 "mediadata":    "",
                 "text":         "",
