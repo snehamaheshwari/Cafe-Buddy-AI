@@ -1359,7 +1359,7 @@ _INFINITO_TOKEN       = os.environ.get(
     "eyJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJJbmZpbml0byIsImlhdCI6MTc4MTY3NTUwMCwic3ViIjoiRGVtb3NoazV0cmFpbmZzOWY3b2l2dDc2In0.xoy92pqdUS7tTKhM6Ow1rGDwLo8u5y5uek4k9f7kuXs",
 )
 _INFINITO_FROM        = os.environ.get("INFINITO_FROM",        "917428309250")
-_INFINITO_TEMPLATE_ID = os.environ.get("INFINITO_TEMPLATE_ID", "1755248")
+_INFINITO_TEMPLATE_ID = os.environ.get("INFINITO_TEMPLATE_ID", "1766074")
 
 
 class WhatsAppSettings(BaseModel):
@@ -1367,47 +1367,65 @@ class WhatsAppSettings(BaseModel):
     message: str = ""  # Optional custom message; omit to send the auto daily summary
 
 
-def _build_daily_summary() -> str:
-    """Build a concise WhatsApp summary of today's café performance."""
+def _build_summary_params() -> dict:
+    """Compute today's café metrics — shared by text summary and templateinfo builder."""
     from data_store import get_data, item_stats, platform_breakdown, daily_revenue
     data = get_data()
     if not data:
-        return (
-            "📊 *Cafe Buddy Daily Report*\n\n"
-            "No data uploaded yet. Visit your dashboard to upload POS data."
-        )
+        return {}
 
     today   = datetime.now().strftime("%Y-%m-%d")
     items   = item_stats(data)
     plats   = platform_breakdown(data)
-    daily   = daily_revenue(data, 1)
-    today_r = next((r for r in daily if r["date"] == today), None)
+    daily_d = daily_revenue(data, 1)
+    today_r = next((r for r in daily_d if r["date"] == today), None)
     total   = sum(r["revenue"] for r in data)
     dates   = sorted(set(r["date"] for r in data))
 
-    top_item  = items[0]["name"] if items else "—"
-    top_plat  = max(plats, key=lambda x: x["revenue"])["platform"] if plats else "—"
+    avg_rev   = total / max(len(dates), 1)
     today_rev = today_r["revenue"] if today_r else 0
+    top_item  = items[0]["name"] if items else "—"
+    top_plat  = (max(plats, key=lambda x: x["revenue"])["platform"]
+                 if plats else "—")
 
     festivals = get_upcoming_festivals(7)
-    fest_line = (
-        f"\n🎉 *Coming soon*: {festivals[0]['name']} in {festivals[0]['days_away']} days"
-        if festivals else ""
-    )
+    festival  = (f"{festivals[0]['name']} in {festivals[0]['days_away']} days"
+                 if festivals else "")
 
-    avg_rev = total / max(len(dates), 1)
-    trend   = "📈 Above avg" if today_rev > avg_rev else "📉 Below avg"
+    return {
+        "datetime":      datetime.now().strftime("%d %b %Y, %I:%M %p"),
+        "today_rev":     f"{today_rev:,.0f}",
+        "daily_avg":     f"{avg_rev:,.0f}",
+        "days":          str(len(dates)),
+        "best_seller":   top_item,
+        "top_channel":   top_plat,
+        "festival":      festival,
+        "trend":         "📈 Above avg" if today_rev > avg_rev else "📉 Below avg",
+        "today_rev_raw": today_rev,
+        "avg_rev_raw":   avg_rev,
+    }
 
+
+def _build_daily_summary() -> str:
+    """Build a concise WhatsApp text summary of today's café performance."""
+    p = _build_summary_params()
+    if not p:
+        return (
+            "📊 *Cafe Buddy Daily Report*\n\n"
+            "No data uploaded yet. Visit your dashboard to upload POS data."
+        )
+    fest_line = f"\n🎉 *Coming soon*: {p['festival']}" if p["festival"] else ""
+    on_track  = p["today_rev_raw"] >= p["avg_rev_raw"] * 0.9
     return (
         f"☕ *Cafe Buddy — Daily Summary*\n"
-        f"📅 {datetime.now().strftime('%d %b %Y, %I:%M %p')}\n\n"
-        f"💰 *Today's Revenue*: ₹{today_rev:,.0f} {trend}\n"
-        f"📊 *Daily Avg*: ₹{avg_rev:,.0f} over {len(dates)} days\n"
-        f"🏆 *Best Seller*: {top_item}\n"
-        f"📱 *Top Channel*: {top_plat}\n"
+        f"📅 {p['datetime']}\n\n"
+        f"💰 *Today's Revenue*: ₹{p['today_rev']} {p['trend']}\n"
+        f"📊 *Daily Avg*: ₹{p['daily_avg']} over {p['days']} days\n"
+        f"🏆 *Best Seller*: {p['best_seller']}\n"
+        f"📱 *Top Channel*: {p['top_channel']}\n"
         f"{fest_line}\n\n"
         f"*Action Items:*\n"
-        f"{'✅ Revenue on track' if today_rev >= avg_rev * 0.9 else '⚠️ Revenue below target — consider a promotion'}\n"
+        f"{'✅ Revenue on track' if on_track else '⚠️ Revenue below target — consider a promotion'}\n"
         f"📦 Check stock for top-selling items\n"
         f"💬 Reply to any pending customer reviews"
     )
@@ -1417,28 +1435,42 @@ def _send_via_infinito(phone_clean: str, msg: str) -> dict:
     """
     Send a WhatsApp message through the Infinito unified API using httpx.
 
-    Tries three auth header strategies in order (Bearer, raw token, apikey),
-    and for each tries template (msgtype 3) then plain-text (msgtype 1).
-    Returns on the first 200.  Collects all errors for diagnostics.
+    Primary:  msgtype 1 with templateinfo (Cafe Buddy daily summary template 1766074).
+    Fallback: msgtype 1 with plain text (msg).
+    Tries Bearer auth only (matches working curl spec).
     """
     import httpx
     import logging as _log
 
-    today_str   = datetime.now().strftime("%d/%m/%Y")
-    _DLR_URL    = "https://webhook.site/cc84d70e-658a-41e3-851d-1207efef4168?To=%p&From=%P&REASON_CODE=%2&GUID=%5"
     common_addr = [{"seq": "1", "to": phone_clean, "from": _INFINITO_FROM, "tag": "Test1"}]
+
+    # ── Build templateinfo from live café data ─────────────────────────────────
+    p = _build_summary_params()
+    if p:
+        ti_parts = [
+            _INFINITO_TEMPLATE_ID,
+            p["datetime"],
+            p["today_rev"],
+            p["daily_avg"],
+            p["days"],
+            p["best_seller"].replace("~", " "),
+            p["top_channel"].replace("~", " "),
+            p["festival"].replace("~", " "),
+        ]
+        templateinfo = "~".join(ti_parts)
+    else:
+        templateinfo = _INFINITO_TEMPLATE_ID  # no data yet
 
     template_payload = {
         "apiver": "1.0",
         "whatsapp": {
             "ver": "2.0",
-            "dlr": {"url": _DLR_URL},
+            "dlr": {"url": ""},
             "messages": [{
                 "coding":       1,
                 "id":           "11",
-                "msgtype":      "3",
-                "templateinfo": f"{_INFINITO_TEMPLATE_ID}~Car~{today_str}",
-                "b_urlinfo":    "#/renew-policy",
+                "msgtype":      "1",
+                "templateinfo": templateinfo,
                 "type":         "",
                 "mediadata":    "",
                 "text":         "",
@@ -1451,13 +1483,12 @@ def _send_via_infinito(phone_clean: str, msg: str) -> dict:
         "apiver": "1.0",
         "whatsapp": {
             "ver": "2.0",
-            "dlr": {"url": _DLR_URL},
+            "dlr": {"url": ""},
             "messages": [{
                 "coding":       1,
                 "id":           "11",
                 "msgtype":      "1",
                 "templateinfo": "",
-                "b_urlinfo":    "",
                 "type":         "",
                 "mediadata":    "",
                 "text":         msg,
@@ -1466,14 +1497,9 @@ def _send_via_infinito(phone_clean: str, msg: str) -> dict:
         },
     }
 
-    # ── Auth strategies to try in order ───────────────────────────────────────
-    # ValueFirst/Infinito docs state tokens can be sent as "Bearer" OR raw
-    # API-key style.  We try all variants so one bad header format can't
-    # permanently block delivery.
+    # Bearer auth matches the working curl spec exactly.
     auth_variants = [
-        ("Bearer",  {"Authorization": f"Bearer {_INFINITO_TOKEN}"}),
-        ("Raw",     {"Authorization": _INFINITO_TOKEN}),
-        ("apikey",  {"apikey": _INFINITO_TOKEN}),
+        ("Bearer", {"Authorization": f"Bearer {_INFINITO_TOKEN}"}),
     ]
 
     def _call(payload: dict, hdrs: dict) -> tuple[int, str]:
@@ -1495,22 +1521,22 @@ def _send_via_infinito(phone_clean: str, msg: str) -> dict:
     errors: list[str] = []
 
     for label, hdrs in auth_variants:
-        # Try template message first
+        # Try summary template first (msgtype 1 + templateinfo)
         s, b = _call(template_payload, hdrs)
         if s == 200:
             return {
                 "success":  True,
-                "message":  f"WhatsApp template sent via Infinito! (auth={label})",
+                "message":  "WhatsApp daily summary sent via Infinito!",
                 "response": b[:300],
             }
         errors.append(f"[{label}/template] HTTP {s}: {b[:120]}")
 
-        # Fallback to plain text
+        # Fallback: plain text
         s2, b2 = _call(text_payload, hdrs)
         if s2 == 200:
             return {
                 "success":  True,
-                "message":  f"WhatsApp message sent via Infinito! (auth={label})",
+                "message":  "WhatsApp message sent via Infinito (plain text fallback).",
                 "response": b2[:300],
             }
         errors.append(f"[{label}/text] HTTP {s2}: {b2[:120]}")
@@ -1608,21 +1634,30 @@ async def whatsapp_diagnose():
     """
     import httpx
 
-    today_str    = datetime.now().strftime("%d/%m/%Y")
-    _DLR_URL_D   = "https://webhook.site/cc84d70e-658a-41e3-851d-1207efef4168?To=%p&From=%P&REASON_CODE=%2&GUID=%5"
     example_addr = [{"seq": "1", "to": "919999999999", "from": _INFINITO_FROM, "tag": "Test1"}]
+
+    # Build the same templateinfo that _send_via_infinito would use
+    p = _build_summary_params()
+    if p:
+        ti_parts = [
+            _INFINITO_TEMPLATE_ID,
+            p["datetime"], p["today_rev"], p["daily_avg"],
+            p["days"], p["best_seller"], p["top_channel"], p["festival"],
+        ]
+        example_templateinfo = "~".join(ti_parts)
+    else:
+        example_templateinfo = _INFINITO_TEMPLATE_ID
 
     template_payload = {
         "apiver": "1.0",
         "whatsapp": {
             "ver": "2.0",
-            "dlr": {"url": _DLR_URL_D},
+            "dlr": {"url": ""},
             "messages": [{
                 "coding":       1,
                 "id":           "11",
-                "msgtype":      "3",
-                "templateinfo": f"{_INFINITO_TEMPLATE_ID}~Car~{today_str}",
-                "b_urlinfo":    "#/renew-policy",
+                "msgtype":      "1",
+                "templateinfo": example_templateinfo,
                 "type":         "",
                 "mediadata":    "",
                 "text":         "",
