@@ -1444,16 +1444,41 @@ def _send_via_infinito(phone_clean: str, msg: str) -> dict:
     """
     Send a WhatsApp message through the Infinito unified API using httpx.
 
-    Primary:  msgtype 1 with templateinfo (Cafe Buddy daily summary template 1766074).
-    Fallback: msgtype 1 with plain text (msg).
-    Tries Bearer auth only (matches working curl spec).
+    Primary:  msgtype 1, plain text — uses our pre-computed summary so that
+              trend/action-items reflect the correct Python calculation, not
+              the Infinito template's re-calculation which had incorrect results.
+    Fallback: msgtype 1 with templateinfo (template 1766074) in case plain
+              text is rejected by the gateway.
     """
     import httpx
     import logging as _log
 
     common_addr = [{"seq": "1", "to": phone_clean, "from": _INFINITO_FROM, "tag": "Test1"}]
 
-    # ── Build templateinfo from live café data ─────────────────────────────────
+    # Use the custom message if provided, otherwise build the daily summary.
+    # _build_daily_summary() computes trend/action-items correctly in Python,
+    # avoiding the Infinito template's broken numeric comparison.
+    outgoing_text = msg if msg else _build_daily_summary()
+
+    text_payload = {
+        "apiver": "1.0",
+        "whatsapp": {
+            "ver": "2.0",
+            "dlr": {"url": ""},
+            "messages": [{
+                "coding":       1,
+                "id":           "11",
+                "msgtype":      "1",
+                "templateinfo": "",
+                "type":         "",
+                "mediadata":    "",
+                "text":         outgoing_text,
+                "addresses":    common_addr,
+            }],
+        },
+    }
+
+    # Build templateinfo fallback from live café data
     p = _build_summary_params()
     if p:
         ti_parts = [
@@ -1468,7 +1493,7 @@ def _send_via_infinito(phone_clean: str, msg: str) -> dict:
         ]
         templateinfo = "~".join(ti_parts)
     else:
-        templateinfo = _INFINITO_TEMPLATE_ID  # no data yet
+        templateinfo = _INFINITO_TEMPLATE_ID
 
     template_payload = {
         "apiver": "1.0",
@@ -1488,39 +1513,15 @@ def _send_via_infinito(phone_clean: str, msg: str) -> dict:
         },
     }
 
-    text_payload = {
-        "apiver": "1.0",
-        "whatsapp": {
-            "ver": "2.0",
-            "dlr": {"url": ""},
-            "messages": [{
-                "coding":       1,
-                "id":           "11",
-                "msgtype":      "1",
-                "templateinfo": "",
-                "type":         "",
-                "mediadata":    "",
-                "text":         msg,
-                "addresses":    common_addr,
-            }],
-        },
-    }
+    hdrs = {"Authorization": f"Bearer {_INFINITO_TOKEN}"}
 
-    # Bearer auth matches the working curl spec exactly.
-    auth_variants = [
-        ("Bearer", {"Authorization": f"Bearer {_INFINITO_TOKEN}"}),
-    ]
-
-    def _call(payload: dict, hdrs: dict) -> tuple[int, str]:
+    def _call(payload: dict) -> tuple[int, str]:
         try:
             with httpx.Client(timeout=20, follow_redirects=True) as client:
                 resp = client.post(_INFINITO_URL, json=payload, headers=hdrs)
                 _log.warning(
-                    "Infinito → HTTP %d | auth=%s | to=%s | response=%s",
-                    resp.status_code,
-                    list(hdrs.keys())[0],
-                    phone_clean,
-                    resp.text[:300],
+                    "Infinito → HTTP %d | to=%s | response=%s",
+                    resp.status_code, phone_clean, resp.text[:300],
                 )
                 return resp.status_code, resp.text
         except Exception as exc:
@@ -1529,26 +1530,25 @@ def _send_via_infinito(phone_clean: str, msg: str) -> dict:
 
     errors: list[str] = []
 
-    for label, hdrs in auth_variants:
-        # Try summary template first (msgtype 1 + templateinfo)
-        s, b = _call(template_payload, hdrs)
-        if s == 200:
-            return {
-                "success":  True,
-                "message":  "WhatsApp daily summary sent via Infinito!",
-                "response": b[:300],
-            }
-        errors.append(f"[{label}/template] HTTP {s}: {b[:120]}")
+    # ── Primary: plain text with our pre-computed summary ──────────────────────
+    s, b = _call(text_payload)
+    if s == 200:
+        return {
+            "success":  True,
+            "message":  "WhatsApp daily summary sent via Infinito!",
+            "response": b[:300],
+        }
+    errors.append(f"[plain-text] HTTP {s}: {b[:120]}")
 
-        # Fallback: plain text
-        s2, b2 = _call(text_payload, hdrs)
-        if s2 == 200:
-            return {
-                "success":  True,
-                "message":  "WhatsApp message sent via Infinito (plain text fallback).",
-                "response": b2[:300],
-            }
-        errors.append(f"[{label}/text] HTTP {s2}: {b2[:120]}")
+    # ── Fallback: templateinfo ─────────────────────────────────────────────────
+    s2, b2 = _call(template_payload)
+    if s2 == 200:
+        return {
+            "success":  True,
+            "message":  "WhatsApp summary sent via Infinito (template fallback).",
+            "response": b2[:300],
+        }
+    errors.append(f"[template] HTTP {s2}: {b2[:120]}")
 
     # ── All strategies failed — build a diagnostic curl for manual testing ────
     sample_payload_str = _json.dumps(template_payload, indent=2)
