@@ -11,7 +11,7 @@ import asyncio
 import json
 import os
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
@@ -1367,6 +1367,14 @@ class WhatsAppSettings(BaseModel):
     message: str = ""  # Optional custom message; omit to send the auto daily summary
 
 
+_IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def _now_ist() -> datetime:
+    """Return the current datetime in IST (UTC+5:30), works on any server timezone."""
+    return datetime.now(_IST)
+
+
 def _build_summary_params() -> dict:
     """Compute today's café metrics — shared by text summary and templateinfo builder."""
     from data_store import get_data, item_stats, platform_breakdown, daily_revenue
@@ -1374,7 +1382,8 @@ def _build_summary_params() -> dict:
     if not data:
         return {}
 
-    today   = datetime.now().strftime("%Y-%m-%d")
+    now_ist = _now_ist()
+    today   = now_ist.strftime("%Y-%m-%d")
     items   = item_stats(data)
     plats   = platform_breakdown(data)
     daily_d = daily_revenue(data, 1)
@@ -1393,7 +1402,7 @@ def _build_summary_params() -> dict:
                  if festivals else "")
 
     return {
-        "datetime":      datetime.now().strftime("%d %b %Y, %I:%M %p"),
+        "datetime":      now_ist.strftime("%d %b %Y, %I:%M %p"),
         "today_rev":     f"{today_rev:,.0f}",
         "daily_avg":     f"{avg_rev:,.0f}",
         "days":          str(len(dates)),
