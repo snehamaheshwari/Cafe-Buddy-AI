@@ -1377,7 +1377,7 @@ def _now_ist() -> datetime:
 
 def _build_summary_params() -> dict:
     """Compute today's café metrics — shared by text summary and templateinfo builder."""
-    from data_store import get_data, item_stats, platform_breakdown, daily_revenue
+    from data_store import get_data, item_stats, platform_breakdown
     data = get_data()
     if not data:
         return {}
@@ -1386,13 +1386,13 @@ def _build_summary_params() -> dict:
     today   = now_ist.strftime("%Y-%m-%d")
     items   = item_stats(data)
     plats   = platform_breakdown(data)
-    daily_d = daily_revenue(data, 1)
-    today_r = next((r for r in daily_d if r["date"] == today), None)
     total   = sum(r["revenue"] for r in data)
     dates   = sorted(set(r["date"] for r in data))
 
     avg_rev   = total / max(len(dates), 1)
-    today_rev = today_r["revenue"] if today_r else 0
+    # Sum directly from raw records — avoids daily_revenue(data,1) returning
+    # the dataset's last date which may not equal today when formats differ.
+    today_rev = sum(r.get("revenue", 0) for r in data if r.get("date") == today)
     top_item  = items[0]["name"] if items else "—"
     top_plat  = (max(plats, key=lambda x: x["revenue"])["platform"]
                  if plats else "—")
