@@ -1375,17 +1375,19 @@ def _now_ist() -> datetime:
     return datetime.now(_IST)
 
 
-def _build_summary_params() -> dict:
+def _build_summary_params(tenant_id: str = None) -> dict:
     """Compute today's café metrics — shared by text summary and templateinfo builder."""
-    from data_store import get_data, item_stats, platform_breakdown
-    data = get_data()
+    import data_store as _dstore
+    import tenant_store as _tstore
+    tid = tenant_id or _tstore.SYSTEM_TENANT_ID
+    data = _dstore.get_data_for_tenant(tid)
     if not data:
         return {}
 
     now_ist = _now_ist()
     today   = now_ist.strftime("%Y-%m-%d")
-    items   = item_stats(data)
-    plats   = platform_breakdown(data)
+    items   = _dstore.item_stats(data)
+    plats   = _dstore.platform_breakdown(data)
     total   = sum(r["revenue"] for r in data)
     dates   = sorted(set(r["date"] for r in data))
 
@@ -1415,9 +1417,9 @@ def _build_summary_params() -> dict:
     }
 
 
-def _build_daily_summary() -> str:
+def _build_daily_summary(tenant_id: str = None) -> str:
     """Build a concise WhatsApp text summary of today's café performance."""
-    p = _build_summary_params()
+    p = _build_summary_params(tenant_id)
     if not p:
         return (
             "📊 *Cafe Buddy Daily Report*\n\n"
@@ -1440,7 +1442,7 @@ def _build_daily_summary() -> str:
     )
 
 
-def _send_via_infinito(phone_clean: str, msg: str) -> dict:
+def _send_via_infinito(phone_clean: str, msg: str, tenant_id: str = None) -> dict:
     """
     Send a WhatsApp message through the Infinito unified API using httpx.
 
@@ -1458,7 +1460,7 @@ def _send_via_infinito(phone_clean: str, msg: str) -> dict:
     # Use the custom message if provided, otherwise build the daily summary.
     # _build_daily_summary() computes trend/action-items correctly in Python,
     # avoiding the Infinito template's broken numeric comparison.
-    outgoing_text = msg if msg else _build_daily_summary()
+    outgoing_text = msg if msg else _build_daily_summary(tenant_id)
 
     text_payload = {
         "apiver": "1.0",
@@ -1478,8 +1480,8 @@ def _send_via_infinito(phone_clean: str, msg: str) -> dict:
         },
     }
 
-    # Build templateinfo fallback from live café data
-    p = _build_summary_params()
+    # Build templateinfo fallback from live café data (tenant-scoped)
+    p = _build_summary_params(tenant_id)
     if p:
         ti_parts = [
             _INFINITO_TEMPLATE_ID,
@@ -1612,15 +1614,35 @@ def _normalize_phone(raw: str) -> str:
 
 
 @router.post("/notifications/whatsapp/send")
-async def send_whatsapp(settings: WhatsAppSettings):
+async def send_whatsapp(settings: WhatsAppSettings, request: Request = None):
     """
     Send a WhatsApp notification via Infinito (api.goinfinito.com).
 
-    The recipient phone number is the only required field from the frontend.
+    Requires a valid JWT Bearer token — unauthenticated callers receive 401
+    to prevent unauthenticated WhatsApp spam via the Infinito gateway.
+
     Bearer token, sender number, and template ID are pre-configured server-side
     via environment variables (INFINITO_TOKEN, INFINITO_FROM, INFINITO_TEMPLATE_ID).
     """
-    msg         = settings.message or _build_daily_summary()
+    from fastapi import HTTPException
+    import auth_utils as _au
+    import tenant_store as _ts
+    _auth_header = request.headers.get("Authorization", "") if request else ""
+    _tid  = _au.extract_tenant_id(_auth_header)
+    _role = _au.extract_role_id(_auth_header) if hasattr(_au, "extract_role_id") else None
+    if not _tid:
+        raise HTTPException(status_code=401,
+            detail="Authentication required to send WhatsApp notifications")
+    # Only admin and sub_admin can trigger outbound notifications
+    if _role and _role not in ("admin", "sub_admin"):
+        raise HTTPException(status_code=403,
+            detail="Insufficient permissions — admin or sub_admin role required")
+
+    # Validate message to prevent injection: max 2000 chars
+    if settings.message and len(settings.message) > 2000:
+        raise HTTPException(status_code=400, detail="Message too long (max 2000 characters)")
+
+    msg         = settings.message or _build_daily_summary(_tid)
     phone_clean = _normalize_phone(settings.phone)
 
     if not phone_clean.isdigit():
@@ -1629,11 +1651,11 @@ async def send_whatsapp(settings: WhatsAppSettings):
             "message": "Invalid phone number — use digits with country code, e.g. 919876543210 or +91 98765 43210.",
         }
 
-    return _send_via_infinito(phone_clean, msg)
+    return _send_via_infinito(phone_clean, msg, _tid)
 
 
 @router.get("/notifications/whatsapp/diagnose")
-async def whatsapp_diagnose():
+async def whatsapp_diagnose(request: Request = None):
     """
     Diagnostic endpoint — returns the exact request CafeBuddy will send to
     Infinito (payload + masked token) so you can compare it against a working
@@ -1641,12 +1663,19 @@ async def whatsapp_diagnose():
 
     Access via: GET /api/notifications/whatsapp/diagnose
     """
+    from fastapi import HTTPException
     import httpx
+    import auth_utils as _au
+    import tenant_store as _ts
+    _auth_header = request.headers.get("Authorization", "") if request else ""
+    _tid = _au.extract_tenant_id(_auth_header)
+    if not _tid:
+        raise HTTPException(status_code=401, detail="Authentication required")
 
     example_addr = [{"seq": "1", "to": "919999999999", "from": _INFINITO_FROM, "tag": "Test1"}]
 
     # Build the same templateinfo that _send_via_infinito would use
-    p = _build_summary_params()
+    p = _build_summary_params(_tid)
     if p:
         ti_parts = [
             _INFINITO_TEMPLATE_ID,
@@ -1712,6 +1741,10 @@ async def whatsapp_diagnose():
 
 
 @router.get("/notifications/whatsapp/summary")
-def get_whatsapp_summary():
+def get_whatsapp_summary(request: Request = None):
     """Preview the daily summary message that would be sent via WhatsApp."""
-    return {"preview": _build_daily_summary()}
+    import auth_utils as _au
+    import tenant_store as _ts
+    _auth_header = request.headers.get("Authorization", "") if request else ""
+    _tid = _au.extract_tenant_id(_auth_header) or _ts.SYSTEM_TENANT_ID
+    return {"preview": _build_daily_summary(_tid)}

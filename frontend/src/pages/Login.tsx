@@ -40,6 +40,7 @@ export default function Login() {
   })
   const [showRegPw, setShowRegPw]         = useState(false)
   const [showRegConfirm, setShowRegConfirm] = useState(false)
+  const [registeredSlug, setRegisteredSlug] = useState<string | null>(null)
 
   // ── Fetch workspace branding when slug present ──────────────────────────────
   useEffect(() => {
@@ -129,7 +130,7 @@ export default function Login() {
         brand_color: reg.brand_color,
       }) as any
 
-      // Auto-login after successful registration
+      // Auto-login after successful registration — save token BEFORE showing success screen
       login({
         username:    data.username,
         full_name:   reg.owner_name || data.username,
@@ -143,7 +144,8 @@ export default function Login() {
         brand_color: data.brand_color,
         logo_url:    data.logo_url,
       })
-      navigate('/', { replace: true })
+      // Show workspace URL on success screen so the user can bookmark their login link
+      setRegisteredSlug(data.slug)
     } catch (err: any) {
       setError(err.message || 'Registration failed. Please try again.')
     } finally {
@@ -152,6 +154,77 @@ export default function Login() {
   }
 
   const brandIconBg = { backgroundColor: pageColor }
+  const workspaceLoginUrl = registeredSlug
+    ? `${window.location.origin}/login?workspace=${registeredSlug}`
+    : ''
+
+  // ── Registration success screen ─────────────────────────────────────────────
+  if (registeredSlug) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex items-center justify-center px-4 py-8">
+        <div className="w-full max-w-md">
+          <div className="text-center mb-8">
+            <div className="w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg bg-emerald-500">
+              <Coffee size={30} className="text-white" />
+            </div>
+            <h1 className="text-2xl font-bold text-white">Workspace Ready!</h1>
+            <p className="text-slate-400 text-sm mt-1">Your café dashboard is set up</p>
+          </div>
+
+          <div className="bg-white rounded-xl shadow-2xl p-7 space-y-5">
+            <div className="text-center">
+              <div className="text-4xl mb-3">🎉</div>
+              <h2 className="text-lg font-bold text-slate-900">Welcome to Cafe Buddy!</h2>
+              <p className="text-sm text-slate-500 mt-1">
+                Your workspace <strong>{reg.cafe_name || registeredSlug}</strong> is ready.
+                Save your login URL below — you'll need it every time you sign in.
+              </p>
+            </div>
+
+            {/* Workspace URL box */}
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
+              <p className="text-xs font-semibold text-amber-700 mb-2">Your Login URL (bookmark this!)</p>
+              {/* Use input[readonly] so the user can always select + copy, even on HTTP */}
+              <div className="flex items-center gap-2">
+                <input
+                  readOnly
+                  value={workspaceLoginUrl}
+                  onFocus={e => e.currentTarget.select()}
+                  className="flex-1 text-xs text-amber-900 bg-amber-100 rounded px-2 py-1.5 border-0 outline-none cursor-text"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (navigator.clipboard) {
+                      navigator.clipboard.writeText(workspaceLoginUrl)
+                    } else {
+                      // HTTP fallback: select the input text so user can Ctrl+C
+                      const el = document.querySelector('input[readonly]') as HTMLInputElement | null
+                      el?.select()
+                    }
+                  }}
+                  className="shrink-0 text-xs bg-amber-500 text-white px-3 py-1.5 rounded hover:bg-amber-600 transition-colors"
+                >
+                  Copy
+                </button>
+              </div>
+              <p className="text-xs text-amber-600 mt-2">
+                Workspace slug: <strong>{registeredSlug}</strong>
+              </p>
+            </div>
+
+            <button
+              onClick={() => navigate(`/?workspace=${registeredSlug}`, { replace: true })}
+              className="w-full py-3 rounded-lg font-semibold text-white transition-colors"
+              style={{ backgroundColor: '#10b981' }}
+            >
+              Go to Dashboard →
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="min-h-screen bg-slate-900 flex items-center justify-center px-4 py-8">

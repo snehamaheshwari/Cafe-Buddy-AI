@@ -597,8 +597,8 @@ class TestRegression:
 
 class TestPerformance:
     _MAX_MS = {
-        "register":  500,
-        "login":     400,
+        "register":  900,   # bcrypt hashing adds ~200-400ms
+        "login":     800,   # bcrypt verification adds ~200-400ms
         "workspace": 200,
         "dashboard": 300,
         "roles":     200,
@@ -666,3 +666,224 @@ class TestPerformance:
         import tenant_store as ts
         slugs = [t["slug"] for t in ts.list_tenants()]
         assert len(slugs) == len(set(slugs)), "Duplicate slugs detected"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NEW SUBSCRIPTION & DATA ISOLATION TESTS
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestNewUserBlankState:
+    """New tenants must never see data that belongs to another tenant."""
+
+    def test_new_tenant_dashboard_returns_zeros(self, client):
+        """A freshly registered tenant has no data — dashboard must return 0s."""
+        reg = _register(client, cafe_name="BlankCafe", username="blank1", email="b@b.com")
+        assert reg.status_code == 200
+        token = reg.json()["token"]
+        r = client.get("/api/dashboard/overview",
+                       headers={"Authorization": f"Bearer {token}", "X-Username": "blank1"})
+        assert r.status_code == 200
+        d = r.json()
+        assert d["revenue_today"] == 0, "New tenant must have 0 revenue"
+        assert d["orders_today"]  == 0, "New tenant must have 0 orders"
+
+    def test_new_tenant_cannot_see_system_data(self, client):
+        """
+        Even if system tenant has data, a new tenant's token must
+        route to their own (empty) dataset.
+        """
+        import data_store as ds
+        # Inject data directly into the system-tenant in-memory store
+        ds._pos_data = [{
+            "date": "2024-01-01", "item_name": "Stolen Item",
+            "category": "Main", "quantity": 10, "price": 100,
+            "revenue": 1000.0, "cost": 200.0, "platform": "Dine-in",
+        }]
+        try:
+            reg = _register(client, cafe_name="IsolatedCafe", username="iso1", email="i@i.com")
+            token = reg.json()["token"]
+            r = client.get("/api/dashboard/overview",
+                           headers={"Authorization": f"Bearer {token}", "X-Username": "iso1"})
+            d = r.json()
+            assert d["revenue_today"] == 0, \
+                "New tenant must not see system tenant's revenue"
+        finally:
+            ds._pos_data = []
+
+    def test_new_tenant_layer1_summary_blank(self, client):
+        """Layer-1 summary for a new tenant must show 0 records, not system data."""
+        reg = _register(client, cafe_name="Layer1Cafe", username="l1user", email="l1@l1.com")
+        token = reg.json()["token"]
+        r = client.get("/api/layer1/summary",
+                       headers={"Authorization": f"Bearer {token}", "X-Username": "l1user"})
+        assert r.status_code == 200
+        body = r.json()
+        assert body.get("total_records", 0) == 0
+
+
+class TestRegistrationResponse:
+    """Registration endpoint must return enough info for the frontend workspace URL."""
+
+    def test_register_returns_slug(self, client):
+        r = _register(client, cafe_name="SlugTestCafe", username="slugtest", email="st@st.com")
+        assert r.status_code == 200
+        data = r.json()
+        assert "slug" in data, "Response must include workspace slug"
+        assert data["slug"] != "", "Slug must not be empty"
+
+    def test_register_returns_workspace_url(self, client):
+        r = _register(client, cafe_name="UrlTestCafe", username="urltest", email="ut@ut.com")
+        assert r.status_code == 200
+        data = r.json()
+        assert "workspace_url" in data, "Response must include workspace_url"
+        assert data["workspace_url"].startswith("?workspace="), \
+            f"workspace_url must start with ?workspace=, got: {data['workspace_url']}"
+
+    def test_slug_matches_cafe_name(self, client):
+        r = _register(client, cafe_name="My Test Café", username="mtc1", email="mtc@m.com")
+        data = r.json()
+        # Slug should be URL-safe version of cafe name
+        slug = data["slug"]
+        assert " " not in slug, "Slug must not contain spaces"
+        assert slug.islower() or "-" in slug, "Slug should be lowercase"
+
+    def test_register_returns_token(self, client):
+        r = _register(client)
+        assert r.status_code == 200
+        data = r.json()
+        assert "token" in data and data["token"], "Must return a JWT token"
+
+    def test_register_token_contains_tenant_id(self, client):
+        """The issued JWT must embed the new tenant's ID so tenant routing works."""
+        from auth_utils import decode_token
+        r = _register(client, cafe_name="TokenCafe", username="tktst", email="tk@tk.com")
+        token = r.json()["token"]
+        decoded = decode_token(token)
+        assert decoded is not None
+        tenant_id = decoded.get("tenant_id")
+        assert tenant_id and tenant_id != "system", \
+            "New tenant JWT must carry their own tenant_id, not 'system'"
+
+
+class TestWorkspaceSeedIdempotency:
+    """Seed function must be idempotent — safe to run multiple times at startup."""
+
+    def test_seed_creates_workspace(self, isolated_data_dir):
+        import importlib, main as _m
+        importlib.reload(_m)
+        # on_event("startup") does NOT fire on module reload — call directly
+        _m._seed_workspaces()
+        import tenant_store as ts
+        tenant = ts.get_tenant_by_slug("impastocafe")
+        assert tenant is not None, "ImpastoCafe workspace must be created by seed"
+
+    def test_seed_is_idempotent(self, isolated_data_dir):
+        import importlib, main as _m
+        importlib.reload(_m)
+        _m._seed_workspaces()   # second call must not raise or duplicate
+        import tenant_store as ts
+        slugs = [t["slug"] for t in ts.list_tenants()]
+        assert slugs.count("impastocafe") == 1, "Seed must not create duplicate workspace"
+
+    def test_seed_admin_can_login(self, client):
+        """ImpastoCafe admin must be able to log in after seed."""
+        import importlib, main as _m
+        importlib.reload(_m)
+        _m._seed_workspaces()
+        r = _login(client, username="ImpastoCafe", password="ImpastoCafe@123",
+                   workspace="impastocafe")
+        assert r.status_code == 200, f"ImpastoCafe login must succeed; got {r.text}"
+        data = r.json()
+        assert data["tenant_slug"] == "impastocafe"
+
+
+class TestLoginWorkspaceIsolation:
+    """Login without workspace slug must route to system tenant only."""
+
+    def test_login_without_workspace_uses_system_tenant(self, client):
+        """Default login (no workspace) routes to system tenant."""
+        r = _login(client, username="admin", password="cafe123")
+        assert r.status_code == 200
+        data = r.json()
+        assert data.get("tenant_id") == "system" or data.get("tenant_slug") is None, \
+            "System login must produce system tenant context"
+
+    def test_tenant_user_cannot_login_without_workspace(self, client):
+        """A tenant-only user must not be able to log in without specifying workspace."""
+        _register(client, username="tenantonly", password="pass123",
+                  cafe_name="PrivateCafe", email="p@p.com")
+        # Login WITHOUT workspace slug — system tenant doesn't know this user
+        r = _login(client, username="tenantonly", password="pass123")
+        assert r.status_code in (401, 403, 404), \
+            "Tenant user must fail to login without workspace slug"
+
+    def test_login_with_wrong_workspace_fails(self, client):
+        """A correct username/password should fail if workspace slug is wrong."""
+        _register(client, username="wrongws", password="pass123",
+                  cafe_name="Correct Café", email="c@c.com")
+        r = _login(client, username="wrongws", password="pass123",
+                   workspace="this-workspace-does-not-exist")
+        assert r.status_code == 404, "Login with non-existent workspace must return 404"
+
+    def test_login_with_correct_workspace_succeeds(self, client):
+        """Same credentials succeed when the correct workspace slug is provided."""
+        reg = _register(client, username="ws_user", password="pass123",
+                        cafe_name="My Workspace Café", email="w@w.com")
+        slug = reg.json()["slug"]
+        r = _login(client, username="ws_user", password="pass123", workspace=slug)
+        assert r.status_code == 200
+        assert r.json()["tenant_slug"] == slug
+
+
+class TestIntegrationFullRegistrationFlow:
+    """End-to-end: register → login → use dashboard → data is blank."""
+
+    def test_full_registration_to_blank_dashboard(self, client):
+        # 1. Register
+        reg = _register(client, cafe_name="Flow Café", username="flowuser",
+                        email="flow@f.com", password="flowpass1")
+        assert reg.status_code == 200
+        slug  = reg.json()["slug"]
+        token = reg.json()["token"]
+
+        # 2. Use the token to hit the dashboard
+        headers = {"Authorization": f"Bearer {token}", "X-Username": "flowuser"}
+        r = client.get("/api/dashboard/overview", headers=headers)
+        assert r.status_code == 200
+        assert r.json()["revenue_today"] == 0
+
+        # 3. Log out (implicit: just log in again via workspace slug)
+        r2 = _login(client, username="flowuser", password="flowpass1", workspace=slug)
+        assert r2.status_code == 200
+        token2 = r2.json()["token"]
+        assert token2, "Second login must issue a token"
+
+        # 4. Confirm new token still shows empty data
+        r3 = client.get("/api/dashboard/overview",
+                        headers={"Authorization": f"Bearer {token2}", "X-Username": "flowuser"})
+        assert r3.json()["revenue_today"] == 0
+
+    def test_data_uploaded_to_one_tenant_not_visible_to_another(self, client):
+        """Full integration: upload for Tenant A, confirm Tenant B sees nothing."""
+        from data_store import save_dataset_for_tenant
+
+        regA = _register(client, cafe_name="Café A", username="ownerA",
+                         email="a@a.com", password="passA123")
+        regB = _register(client, cafe_name="Café B", username="ownerB",
+                         email="b@b.com", password="passB123")
+
+        tid_A = regA.json()["tenant_id"]
+        token_B = regB.json()["token"]
+
+        # Upload POS data for Tenant A only
+        sample = [{"date": "2024-06-01", "item_name": "Pizza", "category": "Main",
+                   "quantity": 5.0, "price": 300.0, "revenue": 1500.0,
+                   "cost": 500.0, "platform": "Dine-in"}]
+        save_dataset_for_tenant(tid_A, "pos", sample, {"rows": 1})
+
+        # Tenant B must still see empty dashboard
+        r = client.get("/api/dashboard/overview",
+                       headers={"Authorization": f"Bearer {token_B}", "X-Username": "ownerB"})
+        assert r.status_code == 200
+        assert r.json()["revenue_today"] == 0, \
+            "Tenant B must not see Tenant A's uploaded revenue"

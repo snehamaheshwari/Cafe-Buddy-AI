@@ -84,6 +84,72 @@ async def audit_middleware(request: Request, call_next):
 
 random.seed(None)  # non-deterministic seed so each load looks live
 
+
+# ─── Startup: seed known workspaces that should always exist ──────────────────
+def _seed_workspaces() -> None:
+    """
+    Idempotent: creates workspace records that must always be present.
+    Called at startup so Railway restarts (which wipe tenants.json unless
+    a persistent Volume is attached) don't permanently lose these accounts.
+
+    Each entry: (cafe_name, admin_username, password, owner_email)
+    Add a row here for any production workspace the owner controls.
+    """
+    import tenant_store as _ts
+    import auth_utils as _au
+    from role_store import get_tenant_store
+    import logging as _log
+
+    # Passwords read from env vars — never hardcode production credentials.
+    # Set SEED_IMPASTO_PASSWORD in Railway environment variables.
+    _impasto_pwd = os.environ.get("SEED_IMPASTO_PASSWORD", "")
+    if not _impasto_pwd:
+        _log.warning(
+            "[seed] SEED_IMPASTO_PASSWORD env var not set — using insecure default. "
+            "Set this variable in Railway dashboard immediately."
+        )
+        _impasto_pwd = "ImpastoCafe@123"
+    SEED_WORKSPACES = [
+        # cafe_name,     admin_username,  password,        owner_email
+        ("ImpastoCafe", "ImpastoCafe",   _impasto_pwd,    "owner@impastocafe.com"),
+    ]
+
+    for cafe_name, username, password, email in SEED_WORKSPACES:
+        try:
+            existing = _ts.get_tenant_by_slug(_ts.slugify(cafe_name))
+            if existing:
+                # Workspace exists; ensure the admin user also exists
+                store = get_tenant_store(existing["tenant_id"])
+                user = store.get_user(username)
+                if not user:
+                    # User row lost (e.g. roles.json wiped); re-seed it
+                    store.seed_admin_user(username, _au.hash_password(password))
+                    _log.info(f"[seed] Re-seeded admin user '{username}' in '{cafe_name}'")
+                continue
+            # Create the workspace
+            tenant = _ts.create_tenant(
+                cafe_name=cafe_name,
+                owner_name=f"{cafe_name} Owner",
+                owner_email=email,
+                admin_username=username,
+            )
+            pwd_hash = _au.hash_password(password)
+            store = get_tenant_store(tenant["tenant_id"])
+            store.seed_admin_user(username, pwd_hash)
+            _log.info(f"[seed] Created workspace '{cafe_name}' slug={tenant['slug']}")
+        except ValueError as exc:
+            # ValueError = known idempotency case (duplicate slug, empty name, etc.)
+            _log.info(f"[seed] Skipped '{cafe_name}' (already exists or invalid): {exc}")
+        except Exception as exc:
+            # Unexpected error — log at ERROR level so ops can act
+            _log.error(f"[seed] FAILED to create '{cafe_name}': {exc}", exc_info=True)
+
+
+@app.on_event("startup")
+async def on_startup():
+    _seed_workspaces()
+
+
 # ─────────────────────────────────────────────
 # GLOBAL STATE  (uploaded Excel replaces mock data when present)
 # ─────────────────────────────────────────────

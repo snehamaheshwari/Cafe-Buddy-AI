@@ -119,3 +119,14 @@ def extract_username(authorization_header: str) -> Optional[str]:
     if payload:
         return payload.get("username")
     return None
+
+
+def extract_role_id(authorization_header: str) -> Optional[str]:
+    """Extract role_id from JWT Bearer token."""
+    if not authorization_header or not authorization_header.startswith("Bearer "):
+        return None
+    token = authorization_header[7:].strip()
+    payload = decode_token(token)
+    if payload:
+        return payload.get("role_id")
+    return None
