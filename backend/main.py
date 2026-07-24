@@ -116,17 +116,28 @@ def _seed_workspaces() -> None:
 
     for cafe_name, username, password, email in SEED_WORKSPACES:
         try:
+            # Search by slug first, then fall back to admin_username scan.
+            # The workspace may have been registered with a different cafe_name
+            # spelling (e.g. "Impasto Cafe" → slug "impasto-cafe") so the
+            # slugify lookup can miss it, causing create_tenant to raise
+            # ValueError("Username already registered") and silently skip.
             existing = _ts.get_tenant_by_slug(_ts.slugify(cafe_name))
+            if not existing:
+                for t in _ts.list_tenants():
+                    if t.get("admin_username") == username:
+                        existing = t
+                        break
+
             if existing:
-                # Workspace exists; ensure the admin user also exists
                 store = get_tenant_store(existing["tenant_id"])
                 user = store.get_user(username)
                 if not user:
-                    # User row lost (e.g. roles.json wiped); re-seed it
                     store.seed_admin_user(username, _au.hash_password(password))
-                    _log.info(f"[seed] Re-seeded admin user '{username}' in '{cafe_name}'")
+                    _log.warning(f"[seed] Re-seeded admin user '{username}' in '{existing['slug']}'")
+                else:
+                    _log.warning(f"[seed] '{username}' exists in workspace '{existing['slug']}' — OK")
                 continue
-            # Create the workspace
+            # Workspace not found anywhere — create it fresh
             tenant = _ts.create_tenant(
                 cafe_name=cafe_name,
                 owner_name=f"{cafe_name} Owner",
@@ -136,13 +147,9 @@ def _seed_workspaces() -> None:
             pwd_hash = _au.hash_password(password)
             store = get_tenant_store(tenant["tenant_id"])
             store.seed_admin_user(username, pwd_hash)
-            _log.info(f"[seed] Created workspace '{cafe_name}' slug={tenant['slug']}")
-        except ValueError as exc:
-            # ValueError = known idempotency case (duplicate slug, empty name, etc.)
-            _log.info(f"[seed] Skipped '{cafe_name}' (already exists or invalid): {exc}")
+            _log.warning(f"[seed] Created workspace '{cafe_name}' slug={tenant['slug']}")
         except Exception as exc:
-            # Unexpected error — log at ERROR level so ops can act
-            _log.error(f"[seed] FAILED to create '{cafe_name}': {exc}", exc_info=True)
+            _log.error(f"[seed] FAILED for '{cafe_name}': {exc}", exc_info=True)
 
 
 @app.on_event("startup")
