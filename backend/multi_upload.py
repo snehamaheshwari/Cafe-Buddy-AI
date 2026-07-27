@@ -21,13 +21,22 @@ router = APIRouter()
 
 
 def _get_tenant_id(request: Optional[Request]) -> str:
-    """Extract tenant_id from JWT Bearer token; fall back to system tenant."""
+    """Extract tenant_id from JWT Bearer token.
+    - No Authorization header → system/demo tenant (anonymous access).
+    - Valid JWT → the tenant embedded in the token.
+    - Authorization header present but JWT invalid/expired → 401 (force re-login).
+    """
     import auth_utils as _au
     import tenant_store as _ts
     if not request:
         return _ts.SYSTEM_TENANT_ID
     auth_header = request.headers.get("Authorization", "")
-    return _au.extract_tenant_id(auth_header) or _ts.SYSTEM_TENANT_ID
+    if not auth_header:
+        return _ts.SYSTEM_TENANT_ID
+    tenant_id = _au.extract_tenant_id(auth_header)
+    if tenant_id:
+        return tenant_id
+    raise HTTPException(status_code=401, detail="Session expired. Please log in again.")
 
 # ─────────────────────────────────────────────
 # SHARED COLUMN-DETECTION UTILITY
@@ -974,8 +983,42 @@ def customer_summary(request: Request = None):
 
 # ── Reviews / Sentiment ────────────────────────────────────────────────────────
 
+def _reviews_state_path(tenant_id: str) -> str:
+    """Return the path to the per-tenant reviews state JSON file."""
+    import json as _json
+    from tenant_store import get_tenant_data_dir, SYSTEM_TENANT_ID
+    if tenant_id == SYSTEM_TENANT_ID:
+        return os.path.join(os.path.dirname(__file__), "data", "reviews_state.json")
+    return os.path.join(get_tenant_data_dir(tenant_id), "reviews_state.json")
+
+
+def _load_reviews_state(tenant_id: str) -> dict:
+    """Load per-tenant reviews state from disk. Returns {} if not found."""
+    import json as _json
+    path = _reviews_state_path(tenant_id)
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return _json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_reviews_state(tenant_id: str, records: list, stats: dict, info: dict) -> None:
+    """Persist per-tenant reviews state to disk."""
+    import json as _json
+    path = _reviews_state_path(tenant_id)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            _json.dump({"records": records, "stats": stats, "info": info},
+                       f, ensure_ascii=False)
+    except Exception:
+        pass
+
+
 @router.post("/upload/reviews")
-async def upload_reviews(file: UploadFile = File(...)):
+async def upload_reviews(file: UploadFile = File(...), request: Request = None):
     _check_ext(file.filename)
     raw = await file.read()
     try:
@@ -1029,50 +1072,87 @@ async def upload_reviews(file: UploadFile = File(...)):
     if not records:
         raise HTTPException(status_code=422, detail="No valid review rows found.")
 
-    data_store._review_data = records
-    data_store._review_info = engine.info
-    engine.save_state()
-    data_store.save_dataset("reviews_meta", [], engine.info)   # persist info; full records in engine state
+    tid = _get_tenant_id(request)
+    from tenant_store import SYSTEM_TENANT_ID
+    if tid == SYSTEM_TENANT_ID:
+        data_store._review_data = records
+        data_store._review_info = engine.info
+        engine.save_state()
+        data_store.save_dataset("reviews_meta", [], engine.info)
+    else:
+        _save_reviews_state(tid, records, stats, engine.info)
+        bucket = data_store._tenant_bucket(tid)
+        bucket["review_data"]  = records
+        bucket["review_info"]  = engine.info
+        bucket["review_stats"] = stats
 
     return {
         "success": True,
         "message": f"Analysed {len(records)} reviews using TF-IDF + Linear SVM model.",
         "info": engine.info,
         "stats_preview": {
-            "positive":          stats.get("positive", 0),
-            "neutral":           stats.get("neutral",  0),
-            "negative":          stats.get("negative", 0),
+            "positive":           stats.get("positive", 0),
+            "neutral":            stats.get("neutral",  0),
+            "negative":           stats.get("negative", 0),
             "satisfaction_score": stats.get("satisfaction_score", 0),
         },
     }
 
 
 @router.delete("/upload/reviews/clear")
-def clear_reviews():
-    from sentiment_engine import get_engine
-    engine = get_engine()
-    engine._records = []
-    engine._stats   = {}
-    engine._info    = {}
-    engine.clear_state()
-    data_store._review_data = []
-    data_store._review_info = {}
-    data_store.clear_dataset("reviews_meta")
+def clear_reviews(request: Request = None):
+    tid = _get_tenant_id(request)
+    from tenant_store import SYSTEM_TENANT_ID
+    if tid == SYSTEM_TENANT_ID:
+        from sentiment_engine import get_engine
+        engine = get_engine()
+        engine._records = []
+        engine._stats   = {}
+        engine._info    = {}
+        engine.clear_state()
+        data_store._review_data = []
+        data_store._review_info = {}
+        data_store.clear_dataset("reviews_meta")
+    else:
+        path = _reviews_state_path(tid)
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except Exception:
+            pass
+        bucket = data_store._tenant_bucket(tid)
+        bucket["review_data"]  = []
+        bucket["review_info"]  = {}
+        bucket.pop("review_stats", None)
     return {"success": True}
 
 
 @router.get("/data/reviews/summary")
-def reviews_summary():
-    from sentiment_engine import get_engine
-    engine = get_engine()
-    if not engine.has_data:
-        return {"uploaded": False, "info": {}, "summary": {}, "stats": {}}
-    return {
-        "uploaded": True,
-        "info":     engine.info,
-        "stats":    engine.stats,
-        "recent":   engine.records[-10:],
-    }
+def reviews_summary(request: Request = None):
+    tid = _get_tenant_id(request)
+    from tenant_store import SYSTEM_TENANT_ID
+    if tid == SYSTEM_TENANT_ID:
+        from sentiment_engine import get_engine
+        engine = get_engine()
+        if not engine.has_data:
+            return {"uploaded": False, "info": {}, "summary": {}, "stats": {}}
+        return {
+            "uploaded": True,
+            "info":     engine.info,
+            "stats":    engine.stats,
+            "recent":   engine.records[-10:],
+        }
+    else:
+        state = _load_reviews_state(tid)
+        records = state.get("records", [])
+        if not records:
+            return {"uploaded": False, "info": {}, "summary": {}, "stats": {}}
+        return {
+            "uploaded": True,
+            "info":     state.get("info", {}),
+            "stats":    state.get("stats", {}),
+            "recent":   records[-10:],
+        }
 
 
 # ─────────────────────────────────────────────
@@ -1337,34 +1417,30 @@ def get_records(dtype: str, page: int = 1, per_page: int = 50, search: str = "",
 
 @router.get("/upload/status/all")
 def upload_status_all(request: Request = None):
-    from sentiment_engine import get_engine
-    engine = get_engine()
+    from tenant_store import SYSTEM_TENANT_ID
     tid = _get_tenant_id(request)
     fin_data,  fin_info  = data_store.get_financial_for_tenant(tid)
     pos_data,  pos_info  = data_store.get_pos_for_tenant(tid)
     cust_data, cust_info = data_store.get_customer_for_tenant(tid)
     menu_data, menu_info = data_store.get_menu_for_tenant(tid)
+
+    # Reviews: system tenant uses global engine; other tenants use per-tenant state file
+    if tid == SYSTEM_TENANT_ID:
+        from sentiment_engine import get_engine
+        engine = get_engine()
+        reviews_uploaded = engine.has_data
+        reviews_info     = engine.info
+    else:
+        rev_state        = _load_reviews_state(tid)
+        reviews_uploaded = bool(rev_state.get("records"))
+        reviews_info     = rev_state.get("info", {})
+
     return {
-        "financial": {
-            "uploaded": bool(fin_data),
-            "info":     fin_info,
-        },
-        "pos": {
-            "uploaded": bool(pos_data),
-            "info":     pos_info,
-        },
-        "customer": {
-            "uploaded": bool(cust_data),
-            "info":     cust_info,
-        },
-        "reviews": {
-            "uploaded": engine.has_data,
-            "info":     engine.info,
-        },
-        "menu": {
-            "uploaded": bool(menu_data),
-            "info":     menu_info,
-        },
+        "financial": {"uploaded": bool(fin_data),  "info": fin_info},
+        "pos":       {"uploaded": bool(pos_data),  "info": pos_info},
+        "customer":  {"uploaded": bool(cust_data), "info": cust_info},
+        "reviews":   {"uploaded": reviews_uploaded,"info": reviews_info},
+        "menu":      {"uploaded": bool(menu_data), "info": menu_info},
     }
 
 

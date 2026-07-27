@@ -235,13 +235,25 @@ def _sync_data_store():
 # existing module-level globals.
 
 def _req_tenant_id(request: Optional[Request] = None) -> str:
-    """Extract tenant_id from JWT Bearer token; fall back to system tenant."""
+    """Extract tenant_id from JWT Bearer token.
+    - No Authorization header → system/demo tenant (anonymous access).
+    - Valid JWT → the tenant embedded in the token.
+    - Authorization header present but JWT invalid/expired → 401 (force re-login).
+    This prevents expired tokens from silently falling back to the system tenant
+    and showing that tenant's data to logged-in users.
+    """
     import auth_utils as _au
     import tenant_store as _ts
     if not request:
         return _ts.SYSTEM_TENANT_ID
     auth_header = request.headers.get("Authorization", "")
-    return _au.extract_tenant_id(auth_header) or _ts.SYSTEM_TENANT_ID
+    if not auth_header:
+        return _ts.SYSTEM_TENANT_ID   # anonymous / demo access
+    tenant_id = _au.extract_tenant_id(auth_header)
+    if tenant_id:
+        return tenant_id
+    # Authorization header present but JWT could not be decoded (expired or tampered)
+    raise HTTPException(status_code=401, detail="Session expired. Please log in again.")
 
 
 def _req_data(request: Optional[Request] = None) -> list:

@@ -30,8 +30,25 @@ export function authHeaders(): Record<string, string> {
   }
 }
 
+/**
+ * Handle 401 Unauthorized by clearing the stale session and redirecting to login.
+ * Skipped for auth endpoints (e.g. login itself returns 401 for wrong password).
+ */
+function _handleSessionExpired(path: string): void {
+  if (path.startsWith('/auth/')) return  // login wrong-password 401 — don't redirect
+  const stored = localStorage.getItem('cafe_buddy_auth')
+  if (stored) {
+    localStorage.removeItem('cafe_buddy_auth')
+    setTimeout(() => { window.location.href = '/login' }, 50)
+  }
+}
+
 async function get<T>(path: string): Promise<T> {
   const res = await fetch(`${BASE}${path}`, { headers: authHeaders() })
+  if (res.status === 401) {
+    _handleSessionExpired(path)
+    throw new Error('Session expired. Please log in again.')
+  }
   if (!res.ok) throw new Error(`API ${res.status}: ${path}`)
   return res.json()
 }
@@ -43,6 +60,7 @@ async function post<T>(path: string, body?: unknown): Promise<T> {
     body: body ? JSON.stringify(body) : undefined,
   })
   if (!res.ok) {
+    if (res.status === 401) _handleSessionExpired(path)
     const err = await res.json().catch(() => ({}))
     throw new Error(err.detail || `API ${res.status}`)
   }
@@ -51,6 +69,10 @@ async function post<T>(path: string, body?: unknown): Promise<T> {
 
 async function del<T>(path: string): Promise<T> {
   const res = await fetch(`${BASE}${path}`, { method: 'DELETE', headers: authHeaders() })
+  if (res.status === 401) {
+    _handleSessionExpired(path)
+    throw new Error('Session expired. Please log in again.')
+  }
   if (!res.ok) throw new Error(`API ${res.status}: ${path}`)
   return res.json()
 }
