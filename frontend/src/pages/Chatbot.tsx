@@ -6,8 +6,14 @@ import {
 } from 'lucide-react'
 import Header from '../components/Header'
 import { authHeaders } from '../lib/api'
+import { useAuth } from '../context/AuthContext'
 
-const STORAGE_KEY = 'cafebuddy_chat_v2'
+const BASE_STORAGE_KEY = 'cafebuddy_chat_v2'
+
+/** Return a tenant-scoped storage key so each workspace has its own chat history. */
+function chatStorageKey(tenantId?: string): string {
+  return tenantId ? `${BASE_STORAGE_KEY}_${tenantId}` : BASE_STORAGE_KEY
+}
 
 interface Sources { data?: boolean; web?: boolean; festivals?: boolean }
 interface Message {
@@ -34,13 +40,13 @@ function now() {
   return new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })
 }
 
-function saveToStorage(messages: Message[], nextId: number) {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ messages: messages.map(m => ({ ...m, animating: false })), nextId })) } catch { }
+function saveToStorage(messages: Message[], nextId: number, key: string) {
+  try { localStorage.setItem(key, JSON.stringify({ messages: messages.map(m => ({ ...m, animating: false })), nextId })) } catch { }
 }
 
-function loadFromStorage(): { messages: Message[]; nextId: number } | null {
+function loadFromStorage(key: string): { messages: Message[]; nextId: number } | null {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY)
+    const raw = localStorage.getItem(key)
     return raw ? JSON.parse(raw) : null
   } catch { return null }
 }
@@ -102,6 +108,12 @@ function SuggestionCard({ s, onClick, compact = false }: { s: typeof SUGGESTIONS
 }
 
 export default function Chatbot() {
+  const { user } = useAuth()
+  // Each workspace gets its own chat history in localStorage.
+  // Using tenant_id (UUID) as the discriminator means switching accounts
+  // never leaks one tenant's conversation into another's view.
+  const storageKey = chatStorageKey(user?.tenant_id)
+
   const [messages, setMessages]       = useState<Message[]>([])
   const [input, setInput]             = useState('')
   const [loading, setLoading]         = useState(false)
@@ -120,7 +132,8 @@ export default function Chatbot() {
   const newId = () => ++msgId.current
 
   useEffect(() => {
-    const saved = loadFromStorage()
+    // Load history scoped to this tenant; other tenants' history is invisible
+    const saved = loadFromStorage(storageKey)
     if (saved?.messages.length) {
       setMessages(saved.messages)
       msgId.current = saved.nextId
@@ -128,15 +141,15 @@ export default function Chatbot() {
     fetch('/api/chatbot/status').then(r => r.json()).then(d => {
       setAiMode(d.ai_mode); setDdgMode(d.web_search)
     }).catch(() => {})
-    fetch('/api/upload/status/all').then(r => r.json()).then((all: any) => {
+    fetch('/api/upload/status/all', { headers: authHeaders() }).then(r => r.json()).then((all: any) => {
       setHasData(Object.values(all).some((v: any) => v?.uploaded))
     }).catch(() => setHasData(false))
-  }, [])
+  }, [storageKey])
 
   useEffect(() => {
     if (messages.length > 0 && !messages.some(m => m.animating))
-      saveToStorage(messages, msgId.current)
-  }, [messages])
+      saveToStorage(messages, msgId.current, storageKey)
+  }, [messages, storageKey])
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -215,7 +228,7 @@ export default function Chatbot() {
   const clearChat = () => {
     if (animRef.current) clearTimeout(animRef.current)
     setMessages([]); setClearConfirm(false); setShowMenu(false); setEditingId(null)
-    localStorage.removeItem(STORAGE_KEY); msgId.current = 0
+    localStorage.removeItem(storageKey); msgId.current = 0
   }
 
   const startEdit = (msg: Message) => {

@@ -130,6 +130,7 @@ def log_action(
     status:      str = STATUS_SUCCESS,
     ip_address:  str = "",
     duration_ms: Optional[int] = None,
+    tenant_id:   str = "",      # workspace that owns this entry; "" → "system"
 ) -> dict:
     """
     Append one audit entry to disk and to the in-memory cache.
@@ -149,6 +150,7 @@ def log_action(
         "status":       status,
         "ip_address":   ip_address or "—",
         "duration_ms":  duration_ms,
+        "tenant_id":    tenant_id or "system",
     }
     try:
         path = _audit_file()
@@ -176,10 +178,12 @@ def get_logs(
     date_to:     Optional[str] = None,   # "YYYY-MM-DD"
     search:      Optional[str] = None,   # free-text in description/username
     from_disk:   bool = False,           # read all entries from disk
+    tenant_id:   Optional[str] = None,   # None → no filter (system admin sees all)
 ) -> tuple[list[dict], int]:
     """
     Return (entries, total_matching) filtered and paginated.
     Uses in-memory deque for speed; pass from_disk=True for full history.
+    Pass tenant_id to restrict results to a single workspace.
     """
     _ensure_mem()
 
@@ -191,7 +195,13 @@ def get_logs(
     # Newest first
     entries = list(reversed(entries))
 
-    # ── Filters ──
+    # ── Tenant filter (applied first for efficiency) ──
+    # Entries written before tenant_id was added lack the field; they default
+    # to "system" so only the system tenant sees them.
+    if tenant_id and tenant_id != "system":
+        entries = [e for e in entries if e.get("tenant_id", "system") == tenant_id]
+
+    # ── Other filters ──
     if username:
         entries = [e for e in entries if e.get("username", "").lower() == username.lower()]
     if module:
@@ -236,13 +246,16 @@ def _read_all_from_disk() -> list[dict]:
     return entries
 
 
-def get_stats() -> dict:
+def get_stats(tenant_id: Optional[str] = None) -> dict:
     """
     Aggregate stats from recent entries (in-memory, fast).
+    Pass tenant_id to restrict to a single workspace (None → all).
     Returns: counts by module, action, status, hourly activity.
     """
     _ensure_mem()
     entries = list(_mem)
+    if tenant_id and tenant_id != "system":
+        entries = [e for e in entries if e.get("tenant_id", "system") == tenant_id]
     today   = datetime.now().strftime("%Y-%m-%d")
     today_e = [e for e in entries if e.get("timestamp", "").startswith(today)]
 

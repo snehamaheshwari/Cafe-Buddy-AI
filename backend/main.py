@@ -51,6 +51,7 @@ _AUDIT_EXCLUDE_PREFIXES = (
 @app.middleware("http")
 async def audit_middleware(request: Request, call_next):
     import time
+    import auth_utils as _au_mw
     start = time.monotonic()
     response = await call_next(request)
     elapsed_ms = int((time.monotonic() - start) * 1000)
@@ -61,6 +62,10 @@ async def audit_middleware(request: Request, call_next):
 
     # Only log authenticated requests that aren't handled by explicit audit calls
     if username and not any(path.startswith(p) for p in _AUDIT_EXCLUDE_PREFIXES):
+        # Extract tenant_id from JWT so each log entry is workspace-scoped
+        auth_header = request.headers.get("Authorization", "")
+        tid = _au_mw.extract_tenant_id(auth_header) or "system"
+
         # Derive module from path
         module = "system"
         if "/auth/" in path:
@@ -79,6 +84,7 @@ async def audit_middleware(request: Request, call_next):
             status=_audit.STATUS_SUCCESS if status_code < 400 else _audit.STATUS_ERROR,
             ip_address=request.client.host if request.client else "",
             duration_ms=elapsed_ms,
+            tenant_id=tid,
         )
     return response
 
@@ -764,7 +770,7 @@ def login(req: LoginRequest, request: Request = None):
         _audit.log_action(username=req.username, module="auth", action="LOGIN",
             description=f"Failed login attempt for '{req.username}'"
                         + (f" on workspace '{req.workspace}'" if req.workspace else ""),
-            status=_audit.STATUS_ERROR, ip_address=ip)
+            status=_audit.STATUS_ERROR, ip_address=ip, tenant_id=tenant_id)
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
     # Build JWT carrying tenant context
@@ -778,7 +784,8 @@ def login(req: LoginRequest, request: Request = None):
     _audit.log_action(username=result["username"], module="auth", action="LOGIN",
         description=f"User '{result['username']}' logged in as {result['role_name']}"
                     + (f" (workspace: {req.workspace})" if req.workspace else ""),
-        role=result["role_name"], status=_audit.STATUS_SUCCESS, ip_address=ip)
+        role=result["role_name"], status=_audit.STATUS_SUCCESS, ip_address=ip,
+        tenant_id=tenant_id)
 
     resp: dict = {
         "success":     True,
@@ -937,13 +944,18 @@ def download_template(data_type: str):
 
 @app.post("/api/auth/logout")
 def logout(request: Request = None):
+    import auth_utils as _au_lo
+    import tenant_store as _ts_lo
     username = request.headers.get("X-Username", "anonymous") if request else "anonymous"
+    _auth_hdr = request.headers.get("Authorization", "") if request else ""
+    _tid_lo = _au_lo.extract_tenant_id(_auth_hdr) or _ts_lo.SYSTEM_TENANT_ID
     _audit.log_action(
         username=username,
         module="auth",
         action="LOGOUT",
         description=f"User '{username}' logged out",
         ip_address=(request.client.host if request and request.client else ""),
+        tenant_id=_tid_lo,
     )
     return {"success": True, "message": "Logged out"}
 
@@ -1011,7 +1023,7 @@ def register_tenant(req: TenantRegisterRequest, request: Request = None):
 
     _audit.log_action(username=req.username, module="auth", action="REGISTER",
         description=f"New workspace registered: '{req.cafe_name}' (slug={tenant['slug']})",
-        status=_audit.STATUS_SUCCESS, ip_address=ip)
+        status=_audit.STATUS_SUCCESS, ip_address=ip, tenant_id=tenant["tenant_id"])
 
     return {
         "success":      True,
@@ -1108,7 +1120,7 @@ def update_tenant_branding(req: TenantBrandingRequest, request: Request = None):
     ip = request.client.host if request and request.client else ""
     _audit.log_action(username=username, module="system", action="BRANDING_UPDATE",
         description=f"Updated branding for tenant '{tenant_id}'",
-        ip_address=ip)
+        ip_address=ip, tenant_id=tenant_id)
 
     return {"success": True, "tenant": updated}
 
@@ -1143,12 +1155,14 @@ def get_roles(request: Request = None):
 def create_role(req: RoleCreateRequest, request: Request = None):
     try:
         from role_store import get_tenant_store
-        store = get_tenant_store(_req_tenant_id(request))
+        _role_tid = _req_tenant_id(request)
+        store = get_tenant_store(_role_tid)
         role  = store.create_role(req.id, req.name, req.description, req.permissions)
         username = request.headers.get("X-Username", "admin") if request else "admin"
         _audit.log_action(username=username, module="role_management", action="ROLE_CREATE",
             description=f"Created role '{req.name}' (id={req.id}) with {len(req.permissions)} permissions",
-            ip_address=(request.client.host if request and request.client else ""))
+            ip_address=(request.client.host if request and request.client else ""),
+            tenant_id=_role_tid)
         return {"success": True, "role": role}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1157,13 +1171,15 @@ def create_role(req: RoleCreateRequest, request: Request = None):
 def update_role(role_id: str, req: RoleUpdateRequest, request: Request = None):
     try:
         from role_store import get_tenant_store
-        store = get_tenant_store(_req_tenant_id(request))
+        _role_tid = _req_tenant_id(request)
+        store = get_tenant_store(_role_tid)
         role  = store.update_role(role_id, name=req.name,
                                   description=req.description, permissions=req.permissions)
         username = request.headers.get("X-Username", "admin") if request else "admin"
         _audit.log_action(username=username, module="role_management", action="ROLE_UPDATE",
             description=f"Updated role '{role_id}': name={req.name}, perms={req.permissions}",
-            ip_address=(request.client.host if request and request.client else ""))
+            ip_address=(request.client.host if request and request.client else ""),
+            tenant_id=_role_tid)
         return {"success": True, "role": role}
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -1174,11 +1190,13 @@ def update_role(role_id: str, req: RoleUpdateRequest, request: Request = None):
 def delete_role(role_id: str, request: Request = None):
     try:
         from role_store import get_tenant_store
-        get_tenant_store(_req_tenant_id(request)).delete_role(role_id)
+        _role_tid = _req_tenant_id(request)
+        get_tenant_store(_role_tid).delete_role(role_id)
         username = request.headers.get("X-Username", "admin") if request else "admin"
         _audit.log_action(username=username, module="role_management", action="ROLE_DELETE",
             description=f"Deleted role '{role_id}'",
-            ip_address=(request.client.host if request and request.client else ""))
+            ip_address=(request.client.host if request and request.client else ""),
+            tenant_id=_role_tid)
         return {"success": True, "message": f"Role '{role_id}' deleted"}
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -1213,13 +1231,15 @@ def get_users(request: Request = None):
 def create_user(req: UserCreateRequest, request: Request = None):
     try:
         from role_store import get_tenant_store
-        store = get_tenant_store(_req_tenant_id(request))
+        _user_tid = _req_tenant_id(request)
+        store = get_tenant_store(_user_tid)
         user  = store.create_user(req.username, req.password, req.role_id,
                                   req.full_name, req.email)
         actor = request.headers.get("X-Username", "admin") if request else "admin"
         _audit.log_action(username=actor, module="role_management", action="USER_CREATE",
             description=f"Created user '{req.username}' with role '{req.role_id}'",
-            ip_address=(request.client.host if request and request.client else ""))
+            ip_address=(request.client.host if request and request.client else ""),
+            tenant_id=_user_tid)
         return {"success": True, "user": user}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1228,7 +1248,8 @@ def create_user(req: UserCreateRequest, request: Request = None):
 def update_user(username: str, req: UserUpdateRequest, request: Request = None):
     try:
         from role_store import get_tenant_store
-        store = get_tenant_store(_req_tenant_id(request))
+        _user_tid = _req_tenant_id(request)
+        store = get_tenant_store(_user_tid)
         user  = store.update_user(username, role_id=req.role_id, full_name=req.full_name,
                                   email=req.email, is_active=req.is_active,
                                   password=req.password)
@@ -1239,7 +1260,8 @@ def update_user(username: str, req: UserUpdateRequest, request: Request = None):
         if req.full_name: changes.append("full_name updated")
         _audit.log_action(username=actor, module="role_management", action="USER_UPDATE",
             description=f"Updated user '{username}': {', '.join(changes) or 'no changes'}",
-            ip_address=(request.client.host if request and request.client else ""))
+            ip_address=(request.client.host if request and request.client else ""),
+            tenant_id=_user_tid)
         return {"success": True, "user": user}
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -1250,11 +1272,13 @@ def update_user(username: str, req: UserUpdateRequest, request: Request = None):
 def delete_user(username: str, request: Request = None):
     try:
         from role_store import get_tenant_store
-        get_tenant_store(_req_tenant_id(request)).delete_user(username)
+        _user_tid = _req_tenant_id(request)
+        get_tenant_store(_user_tid).delete_user(username)
         actor = request.headers.get("X-Username", "admin") if request else "admin"
         _audit.log_action(username=actor, module="role_management", action="USER_DELETE",
             description=f"Deleted user '{username}'",
-            ip_address=(request.client.host if request and request.client else ""))
+            ip_address=(request.client.host if request and request.client else ""),
+            tenant_id=_user_tid)
         return {"success": True, "message": f"User '{username}' deleted"}
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -1347,7 +1371,8 @@ async def upload_excel(file: UploadFile = File(...), request: Request = None):
     except ValueError as e:
         _audit.log_action(username=username, module="upload_data", action="FILE_UPLOAD",
             description=f"Failed to parse '{file.filename}': {e}", status=_audit.STATUS_ERROR,
-            ip_address=(request.client.host if request and request.client else ""))
+            ip_address=(request.client.host if request and request.client else ""),
+            tenant_id=tenant_id)
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to parse Excel: {e}")
@@ -1370,7 +1395,8 @@ async def upload_excel(file: UploadFile = File(...), request: Request = None):
     _audit.log_action(username=username, module="upload_data", action="FILE_UPLOAD",
         description=f"Uploaded '{file.filename}' — {len(records)} records, {info.get('unique_dates', 0)} days, "
                     f"{info.get('unique_items', 0)} items",
-        ip_address=(request.client.host if request and request.client else ""))
+        ip_address=(request.client.host if request and request.client else ""),
+        tenant_id=tenant_id)
 
     # Record storage usage for new tenants
     _ts.record_upload(tenant_id, len(raw))
@@ -1395,7 +1421,8 @@ def clear_upload(request: Request = None):
     tid = _req_tenant_id(request)
     _audit.log_action(username=username, module="upload_data", action="FILE_CLEAR",
         description="Cleared uploaded data — reverted to demo mode",
-        ip_address=(request.client.host if request and request.client else ""))
+        ip_address=(request.client.host if request and request.client else ""),
+        tenant_id=tid)
     data_store.clear_all_for_tenant(tid)
     # Also clear module-level globals for system tenant
     if tid == "system":
@@ -2129,7 +2156,8 @@ def approve_decision(decision_id: int, request: Request = None):
     username = request.headers.get("X-Username", "anonymous") if request else "anonymous"
     _audit.log_action(username=username, module="decision_engine", action="DECISION_APPROVE",
         description=f"Approved decision #{decision_id}",
-        ip_address=(request.client.host if request and request.client else ""))
+        ip_address=(request.client.host if request and request.client else ""),
+        tenant_id=tid)
     return {"success": True, "message": f"Decision #{decision_id} approved."}
 
 
@@ -2140,7 +2168,8 @@ def reject_decision(decision_id: int, request: Request = None):
     username = request.headers.get("X-Username", "anonymous") if request else "anonymous"
     _audit.log_action(username=username, module="decision_engine", action="DECISION_REJECT",
         description=f"Rejected decision #{decision_id}",
-        ip_address=(request.client.host if request and request.client else ""))
+        ip_address=(request.client.host if request and request.client else ""),
+        tenant_id=tid)
     return {"success": True, "message": f"Decision #{decision_id} rejected."}
 
 # ─────────────────────────────────────────────
@@ -2341,10 +2370,13 @@ def peer_analyze(req: PeerAnalyzeRequest, request: Request = None):
             "top_item": items[0]["name"] if items else "N/A",
         }
     username = request.headers.get("X-Username", "anonymous") if request else "anonymous"
+    import auth_utils as _au_pa; import tenant_store as _ts_pa
+    _pa_tid = _au_pa.extract_tenant_id(request.headers.get("Authorization","") if request else "") or _ts_pa.SYSTEM_TENANT_ID
     _audit.log_action(username=username, module="market_radar", action="PEER_ANALYSIS",
         description=f"Ran peer analysis for {req.city}" + (f" / {req.area}" if req.area else "")
                     + f" — {len(competitors)} competitors",
-        ip_address=(request.client.host if request and request.client else ""))
+        ip_address=(request.client.host if request and request.client else ""),
+        tenant_id=_pa_tid)
     result = pc.analyze_with_ai(our_stats, competitors, req.city, req.area or "")
     return result
 
@@ -2367,22 +2399,31 @@ def get_audit_logs(
     search:    Optional[str] = None,
     from_disk: bool = False,
 ):
+    import tenant_store as _ts_audit
+    tid   = _req_tenant_id(request)
     actor = request.headers.get("X-Username", "anonymous")
+    # System tenant admins see all entries; other tenants see only their own.
+    filter_tid = None if tid == _ts_audit.SYSTEM_TENANT_ID else tid
     entries, total = _audit.get_logs(
         limit=limit, offset=offset,
         username=username, module=module, action=action, status=status,
-        date_from=date_from, date_to=date_to, search=search, from_disk=from_disk,
+        date_from=date_from, date_to=date_to, search=search,
+        from_disk=from_disk, tenant_id=filter_tid,
     )
     _audit.log_action(username=actor, module="audit_logs", action="AUDIT_VIEW",
         description=f"Viewed audit logs (filters: user={username}, module={module}, "
                     f"action={action}, limit={limit}, offset={offset})",
-        ip_address=(request.client.host if request.client else ""))
+        ip_address=(request.client.host if request.client else ""),
+        tenant_id=tid)
     return {"logs": entries, "total": total, "limit": limit, "offset": offset}
 
 
 @app.get("/api/audit/stats")
-def get_audit_stats():
-    return _audit.get_stats()
+def get_audit_stats(request: Request):
+    import tenant_store as _ts_audit
+    tid = _req_tenant_id(request)
+    filter_tid = None if tid == _ts_audit.SYSTEM_TENANT_ID else tid
+    return _audit.get_stats(tenant_id=filter_tid)
 
 
 @app.get("/api/audit/export")
@@ -2395,15 +2436,19 @@ def export_audit_csv(
     date_from: Optional[str] = None,
     date_to:   Optional[str] = None,
 ):
+    import tenant_store as _ts_audit
+    tid   = _req_tenant_id(request)
+    actor = request.headers.get("X-Username", "anonymous")
+    filter_tid = None if tid == _ts_audit.SYSTEM_TENANT_ID else tid
     entries, _ = _audit.get_logs(
         limit=10_000, offset=0,
         username=username, module=module, action=action, status=status,
-        date_from=date_from, date_to=date_to, from_disk=True,
+        date_from=date_from, date_to=date_to, from_disk=True, tenant_id=filter_tid,
     )
-    actor = request.headers.get("X-Username", "anonymous")
     _audit.log_action(username=actor, module="audit_logs", action="EXPORT",
         description=f"Exported {len(entries)} audit log entries as CSV",
-        ip_address=(request.client.host if request.client else ""))
+        ip_address=(request.client.host if request.client else ""),
+        tenant_id=tid)
     csv_content = _audit.export_csv(entries)
     return Response(
         content=csv_content,
