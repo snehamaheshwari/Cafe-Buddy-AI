@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate, useLocation, useSearchParams } from 'react-router-dom'
 import Sidebar from './components/Sidebar'
 import Login from './pages/Login'
 import Dashboard from './pages/Dashboard'
@@ -32,24 +32,60 @@ function PermissionRoute({
 }) {
   const { user, hasPermission } = useAuth()
   const location = useLocation()
+  const [searchParams] = useSearchParams()
+  const urlWorkspace = searchParams.get('workspace') || ''
 
   if (!user) {
-    return <Navigate to="/login" state={{ from: location }} replace />
+    const loginTarget = urlWorkspace ? `/login?workspace=${urlWorkspace}` : '/login'
+    return <Navigate to={loginTarget} state={{ from: location }} replace />
   }
   if (!hasPermission(feature)) {
-    return <Navigate to="/" replace />
+    // Preserve workspace on the forbidden redirect
+    const homeTarget = urlWorkspace ? `/?workspace=${urlWorkspace}` : '/'
+    return <Navigate to={homeTarget} replace />
   }
   return <>{children}</>
 }
 
 // ─── Authenticated layout wrapper ────────────────────────────────────────────
+/**
+ * Guards every private page.
+ * ① If not logged in → redirect to /login (with optional ?workspace= preserved).
+ * ② If ?workspace= in URL doesn't match the logged-in tenant → redirect to the
+ *    correct workspace login page so the user re-authenticates cleanly.
+ * ③ If logged in as a non-system tenant but URL has no ?workspace= → redirect
+ *    to /?workspace=<slug> so the URL always reflects the active workspace.
+ */
 function PrivateLayout({ children }: { children: React.ReactNode }) {
   const { user } = useAuth()
   const location = useLocation()
+  const [searchParams] = useSearchParams()
+  const urlWorkspace = searchParams.get('workspace') || ''
 
   if (!user) {
-    return <Navigate to="/login" state={{ from: location }} replace />
+    // Preserve the ?workspace= when bouncing to /login
+    const loginTarget = urlWorkspace
+      ? `/login?workspace=${urlWorkspace}`
+      : '/login'
+    return <Navigate to={loginTarget} state={{ from: location }} replace />
   }
+
+  // If a ?workspace= is present in the URL but doesn't match the logged-in
+  // tenant's slug, the user may have followed an old link from another account.
+  // Force them to re-login on the correct workspace.
+  if (urlWorkspace && user.tenant_slug && urlWorkspace !== user.tenant_slug) {
+    return <Navigate to={`/login?workspace=${urlWorkspace}`} replace />
+  }
+
+  // If the logged-in user belongs to a workspace but the URL doesn't carry it,
+  // silently add it so every navigation stays workspace-scoped.
+  if (!urlWorkspace && user.tenant_slug) {
+    const target = `${location.pathname}?workspace=${user.tenant_slug}${
+      location.hash ? location.hash : ''
+    }`
+    return <Navigate to={target} replace />
+  }
+
   return (
     <SidebarProvider>
       <div className="flex min-h-screen bg-slate-100">
@@ -66,7 +102,11 @@ function PrivateLayout({ children }: { children: React.ReactNode }) {
 // ─── Public route (redirect to home if already logged in) ────────────────────
 function PublicRoute({ children }: { children: React.ReactNode }) {
   const { user } = useAuth()
-  if (user) return <Navigate to="/" replace />
+  if (user) {
+    // Redirect logged-in users to their workspace-scoped home
+    const target = user.tenant_slug ? `/?workspace=${user.tenant_slug}` : '/'
+    return <Navigate to={target} replace />
+  }
   return <>{children}</>
 }
 

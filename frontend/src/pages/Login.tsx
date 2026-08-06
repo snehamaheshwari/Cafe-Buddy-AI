@@ -92,7 +92,8 @@ export default function Login() {
         brand_color: data.brand_color,
         logo_url:    data.logo_url,
       })
-      navigate('/', { replace: true })
+      // Preserve workspace slug in the URL so the app stays tenant-scoped
+      navigate(workspaceSlug ? `/?workspace=${workspaceSlug}` : '/', { replace: true })
     } catch (err: any) {
       setError(err.message || 'Invalid credentials')
     } finally {

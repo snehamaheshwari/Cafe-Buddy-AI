@@ -134,14 +134,17 @@ _FESTIVALS = [
 
 
 def get_upcoming_festivals(days: int = 90) -> list:
-    today = datetime.now()
+    """Return festivals within `days` days, using IST date-only comparison."""
+    from datetime import date as _date, timezone as _tz, timedelta as _td
+    _IST_tz = _tz(_td(hours=5, minutes=30))
+    today = datetime.now(_IST_tz).date()   # IST calendar date, no time component
     result = []
     for year_offset in [0, 1]:
         year = today.year + year_offset
         for f in _FESTIVALS:
             try:
-                fest_date = datetime(year, f["month"], f["day"])
-                delta     = (fest_date - today).days
+                fest_date = _date(year, f["month"], f["day"])
+                delta     = (fest_date - today).days   # date - date = exact days
                 if 0 <= delta <= days:
                     result.append({**f, "date": fest_date.strftime("%d %b %Y"),
                                    "days_away": delta})
@@ -287,6 +290,10 @@ _SYSTEM_PROMPT = """You are Cafe Buddy AI — a sharp, data-driven assistant for
 def _build_system_msg(context: str, search: list, festivals: list,
                       ml_context: str = "") -> str:
     """Assemble the system prompt from café context, web results, festivals."""
+    from datetime import timezone as _tz2, timedelta as _td2
+    _now_ist = datetime.now(_tz2(_td2(hours=5, minutes=30)))
+    today_str = _now_ist.strftime("%A, %d %B %Y")   # e.g. "Wednesday, 05 August 2026"
+
     fest_txt = ""
     if festivals:
         fest_txt = "── UPCOMING FESTIVALS ─────────────────────────────────────\n"
@@ -302,6 +309,7 @@ def _build_system_msg(context: str, search: list, festivals: list,
             web_txt += f"• {r['title']}\n  {r['body'][:300]}\n"
 
     return (f"{_SYSTEM_PROMPT}\n\n"
+            f"TODAY (IST): {today_str}\n\n"
             f"{ml_context}\n\n"
             f"CONTEXT:\n{context}\n\n"
             f"{fest_txt}\n{web_txt}")
@@ -1099,8 +1107,15 @@ class ChatRequest(BaseModel):
 @router.post("/chatbot/stream")
 async def chatbot_stream(req: ChatRequest, request: Request = None):
     import auth_utils as _au, tenant_store as _ts
+    from fastapi import HTTPException as _HX
     _auth_header = request.headers.get("Authorization", "") if request else ""
-    _tid = _au.extract_tenant_id(_auth_header) or _ts.SYSTEM_TENANT_ID
+    if _auth_header:
+        _extracted = _au.extract_tenant_id(_auth_header)
+        if not _extracted:
+            raise _HX(status_code=401, detail="Session expired. Please log in again.")
+        _tid = _extracted
+    else:
+        _tid = _ts.SYSTEM_TENANT_ID   # anonymous / demo access
     data       = _ds.get_data_for_tenant(_tid)
     context    = _build_context(data)
     festivals  = get_upcoming_festivals(90)
@@ -1217,8 +1232,15 @@ async def chatbot_ask(req: ChatRequest, request: Request = None):
     """Identical logic to /chatbot/stream but returns a single JSON object.
     Used by the frontend when SSE is blocked by a tunnel or proxy."""
     import auth_utils as _au, tenant_store as _ts
+    from fastapi import HTTPException as _HX
     _auth_header = request.headers.get("Authorization", "") if request else ""
-    _tid = _au.extract_tenant_id(_auth_header) or _ts.SYSTEM_TENANT_ID
+    if _auth_header:
+        _extracted = _au.extract_tenant_id(_auth_header)
+        if not _extracted:
+            raise _HX(status_code=401, detail="Session expired. Please log in again.")
+        _tid = _extracted
+    else:
+        _tid = _ts.SYSTEM_TENANT_ID   # anonymous / demo access
     data      = _ds.get_data_for_tenant(_tid)
     context   = _build_context(data)
     festivals = get_upcoming_festivals(90)
