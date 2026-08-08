@@ -1,0 +1,26 @@
+{
+  "name": "cafe-buddy-e2e",
+  "version": "1.0.0",
+  "description": "Playwright E2E test suite for Cafe Buddy AI",
+  "scripts": {
+    "test": "playwright test",
+    "test:headed": "playwright test --headed",
+    "test:ui": "playwright test --ui",
+    "test:debug": "playwright test --debug",
+    "test:report": "playwright show-report",
+    "test:login": "playwright test tests/auth/",
+    "test:upload": "playwright test tests/upload/",
+    "test:dashboard": "playwright test tests/dashboard/",
+    "test:chatbot": "playwright test tests/chatbot/",
+    "test:roles": "playwright test tests/roles/",
+    "test:audit": "playwright test tests/audit/",
+    "test:isolation": "playwright test tests/isolation/",
+    "test:smoke": "playwright test --grep @smoke",
+    "test:regression": "playwright test --grep @regression",
+    "test:ci": "playwright test --reporter=html,junit"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0",
+    "@types/node": "^22.0.0"
+  }
+}

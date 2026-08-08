@@ -1,0 +1,181 @@
+/**
+ * Cafe Buddy AI — Jenkinsfile
+ * Declarative pipeline that runs Playwright E2E tests as a deployment gate.
+ *
+ * Stages:
+ *   1. Checkout         — pull source
+ *   2. Install          — npm ci (cached node_modules)
+ *   3. Install Browsers — Playwright browser binaries
+ *   4. Smoke Tests      — @smoke tagged tests (fast gate, ~2 min)
+ *   5. Full Regression  — all tests (run on main/master only)
+ *   6. Publish Reports  — HTML report + JUnit XML
+ *   7. Deploy Gate      — only proceeds if tests pass
+ */
+pipeline {
+  agent any
+
+  // ── Environment variables ─────────────────────────────────────────────────
+  environment {
+    NODE_VERSION        = '22'
+    BASE_URL            = "${env.BASE_URL ?: 'https://aicafebuddy.com'}"
+    IMPASTO_PASSWORD    = credentials('impasto-cafe-password')   // Jenkins secret
+    SYSTEM_ADMIN_PASSWORD = credentials('system-admin-password')
+    PLAYWRIGHT_BROWSERS = 'chromium'   // only Chromium in CI
+  }
+
+  // ── Options ───────────────────────────────────────────────────────────────
+  options {
+    timeout(time: 30, unit: 'MINUTES')
+    buildDiscarder(logRotator(numToKeepStr: '20'))
+    timestamps()
+    ansiColor('xterm')
+  }
+
+  // ── Triggers ──────────────────────────────────────────────────────────────
+  triggers {
+    // Run automatically on every push (configure GitHub webhook → Jenkins URL)
+    githubPush()
+  }
+
+  // ── Stages ────────────────────────────────────────────────────────────────
+  stages {
+
+    stage('Checkout') {
+      steps {
+        checkout scm
+        echo "Building branch: ${env.GIT_BRANCH} | commit: ${env.GIT_COMMIT?.take(8)}"
+      }
+    }
+
+    stage('Install Dependencies') {
+      steps {
+        dir('e2e') {
+          // Use CI-safe install (respects package-lock, no audit prompts)
+          sh 'npm ci'
+        }
+      }
+    }
+
+    stage('Install Playwright Browsers') {
+      steps {
+        dir('e2e') {
+          sh 'npx playwright install chromium --with-deps'
+        }
+      }
+    }
+
+    stage('Auth Setup') {
+      steps {
+        dir('e2e') {
+          sh '''
+            npx playwright test tests/auth.setup.ts \
+              --project=setup \
+              --reporter=list
+          '''
+        }
+      }
+    }
+
+    stage('Smoke Tests') {
+      steps {
+        dir('e2e') {
+          sh '''
+            npx playwright test \
+              --grep "@smoke" \
+              --project=chromium \
+              --reporter=list,junit \
+              --output=test-results/smoke
+          '''
+        }
+      }
+      post {
+        always {
+          dir('e2e') {
+            junit 'test-results/junit.xml'
+          }
+        }
+        failure {
+          echo '❌ SMOKE TESTS FAILED — blocking deployment'
+          // Abort the pipeline immediately if smoke tests fail
+          error('Smoke tests failed. Deployment blocked.')
+        }
+      }
+    }
+
+    stage('Full Regression') {
+      // Only run full regression on main/master branch or tags
+      when {
+        anyOf {
+          branch 'main'
+          branch 'master'
+          tag pattern: 'v\\d+\\.\\d+\\.\\d+', comparator: 'REGEXP'
+        }
+      }
+      steps {
+        dir('e2e') {
+          sh '''
+            npx playwright test \
+              --project=chromium \
+              --reporter=html,junit \
+              --output=test-results/regression
+          '''
+        }
+      }
+      post {
+        always {
+          dir('e2e') {
+            junit 'test-results/junit.xml'
+          }
+        }
+      }
+    }
+
+    stage('Publish Test Report') {
+      steps {
+        dir('e2e') {
+          publishHTML(target: [
+            allowMissing:          false,
+            alwaysLinkToLastBuild: true,
+            keepAll:               true,
+            reportDir:             'playwright-report',
+            reportFiles:           'index.html',
+            reportName:            'Playwright E2E Report',
+            reportTitles:          'Cafe Buddy E2E Results',
+          ])
+        }
+      }
+    }
+
+    stage('Deploy Gate') {
+      when {
+        anyOf { branch 'main'; branch 'master' }
+      }
+      steps {
+        echo '✅ All tests passed — deploying to Railway...'
+        sh '''
+          git push origin master:main
+        '''
+      }
+    }
+  }
+
+  // ── Post ──────────────────────────────────────────────────────────────────
+  post {
+    always {
+      dir('e2e') {
+        // Archive screenshots / videos on failure
+        archiveArtifacts artifacts: 'test-results/**/*.png,test-results/**/*.mp4', allowEmptyArchive: true
+        // Archive JUnit for trend graphs
+        archiveArtifacts artifacts: 'test-results/junit.xml',                      allowEmptyArchive: true
+      }
+    }
+    success {
+      echo '🚀 Pipeline passed — build is green!'
+    }
+    failure {
+      echo '💥 Pipeline FAILED — check Playwright report for details'
+      // Notify Slack / email (configure credentials in Jenkins)
+      // slackSend(color: 'danger', message: "❌ Cafe Buddy E2E failed: ${env.BUILD_URL}")
+    }
+  }
+}
